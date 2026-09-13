@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,7 @@ from research.validation import (
     evaluate_strategy_robustness,
     monte_carlo_validation,
 )
+from research.experiments import ExperimentStore, reproduce_experiment
 
 
 def _frame():
@@ -71,6 +73,7 @@ def test_strategy_robustness_report():
         method="grid",
         config=config,
         optimizer_kwargs={"max_workers": 1, "code": "600519"},
+        record_experiment=False,
     )
     assert report.in_sample
     assert report.out_sample
@@ -122,11 +125,45 @@ def test_multiple_strategy_comparison():
     print("PASS multiple strategy comparison")
 
 
+def test_validation_experiment_is_reproducible():
+    frame = _frame()
+    config = ValidationConfig(
+        in_sample_ratio=0.7,
+        n_splits=2,
+        train_ratio=0.5,
+        monte_carlo_runs=80,
+        top_k=3,
+        min_train_bars=60,
+        min_test_bars=20,
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ExperimentStore(tmp)
+        report = evaluate_strategy_robustness(
+            frame,
+            "双均线",
+            {"fast": [3, 5], "slow": [12, 20]},
+            config=config,
+            optimizer_kwargs={"max_workers": 1, "code": "600519"},
+            experiment_store=store,
+        )
+        assert report.experiment_id
+        record = store.load(report.experiment_id)
+        assert record.kind == "validation"
+        reproduced = reproduce_experiment(
+            report.experiment_id,
+            store=store,
+            data_loader=lambda context: frame,
+        )
+        assert reproduced["matches"], reproduced["differences"]
+    print("PASS validation experiment")
+
+
 def run_test():
     for test in (
         test_monte_carlo_distribution,
         test_strategy_robustness_report,
         test_multiple_strategy_comparison,
+        test_validation_experiment_is_reproducible,
     ):
         test()
     print("===== validation tests passed =====")

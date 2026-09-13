@@ -771,6 +771,35 @@ def reproduce_experiment(experiment_id: str, *, store=None,
             ),
             "output": actual_output,
         }
+    elif record.kind == "validation":
+        from research.validation import (
+            ValidationConfig,
+            evaluate_strategy_robustness,
+        )
+
+        df = _load_validation_experiment_data(record, data_loader=data_loader)
+        validation_config = ValidationConfig(
+            **record.engine_config["validation_config"]
+        )
+        optimizer_kwargs = {
+            key: value for key, value in record.engine_config.items()
+            if key not in {"metric", "method", "validation_config"}
+        }
+        validation_report = evaluate_strategy_robustness(
+            df,
+            record.strategy["key"],
+            record.parameter_ranges,
+            metric=record.engine_config["metric"],
+            method=record.engine_config["method"],
+            config=validation_config,
+            optimizer_kwargs=optimizer_kwargs,
+            record_experiment=False,
+        )
+        actual = {
+            "reproducibility_key": validation_report.reproducibility_key,
+            "result_hash": validation_report.result_hash,
+            "output": validation_report,
+        }
     else:
         raise ValueError(f"不支持的实验类型：{record.kind!r}")
 
@@ -837,6 +866,28 @@ def _load_batch_experiment_data(record: ExperimentRecord, *, data_loader=None):
                 strict=True,
             )
     return frames
+
+
+def _load_validation_experiment_data(record: ExperimentRecord, *,
+                                     data_loader=None):
+    if data_loader is not None:
+        loaded = data_loader(record.data)
+        if isinstance(loaded, dict) and "date" not in loaded:
+            dataset = record.data.get("dataset", {})
+            return loaded.get(dataset.get("symbol"))
+        return loaded
+    dataset = record.data.get("dataset", {})
+    snapshot_id = dataset.get("snapshot_id")
+    if snapshot_id:
+        return load_snapshot(snapshot_id, symbol=dataset.get("symbol"))
+    return load_market_data(
+        dataset["symbol"],
+        dataset["start"],
+        dataset["end"],
+        freq=dataset.get("frequency", "daily"),
+        adjust=dataset.get("adjust", "qfq"),
+        strict=True,
+    )
 
 
 def _batch_strategy_contexts(strategy_configs: list[dict]) -> list[dict]:

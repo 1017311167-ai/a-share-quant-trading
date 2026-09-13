@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
@@ -13,7 +14,7 @@ import pandas as pd
 from core.backtest_engine import BacktestEngine
 from optimization import optimize_parameters
 from strategies.factory import create_strategy
-from utils.versioning import get_code_version
+from utils.versioning import get_code_version, stable_hash
 
 
 MINIMIZE_METRICS = {"最大回撤", "年化波动率", "总手续费"}
@@ -67,6 +68,9 @@ class RobustnessReport:
     benchmark: dict
     overfitting: dict
     warnings: list[str] = field(default_factory=list)
+    reproducibility_key: str = ""
+    result_hash: str = ""
+    experiment_id: str | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now().isoformat(timespec="seconds")
     )
@@ -109,6 +113,9 @@ def evaluate_strategy_robustness(
         config: ValidationConfig | None = None,
         optimizer_kwargs: dict | None = None,
         code: str | None = None,
+        record_experiment: bool = True,
+        experiment_name: str | None = None,
+        experiment_store=None,
 ) -> RobustnessReport:
     """执行样本内外、滚动、Walk-forward、参数稳定性和蒙特卡洛评估。"""
     config = config or ValidationConfig()
@@ -197,7 +204,7 @@ def evaluate_strategy_robustness(
     warnings.extend(walk_forward.get("failed", []))
     if out_result["metrics"].get("总交易次数", 0) < 5:
         warnings.append("样本外完整交易次数少于 5，结论不稳定")
-    return RobustnessReport(
+    report = RobustnessReport(
         strategy=metadata.to_dict(),
         data={
             "symbol": _infer_symbol(df, code),
@@ -226,6 +233,19 @@ def evaluate_strategy_robustness(
         overfitting=overfitting,
         warnings=warnings,
     )
+    _finalize_validation_record(
+        report,
+        strategy_name=strategy_name,
+        param_ranges=param_ranges,
+        method=method,
+        optimizer_kwargs=optimizer_kwargs,
+        config=config,
+        code=code,
+        record=record_experiment,
+        experiment_name=experiment_name,
+        experiment_store=experiment_store,
+    )
+    return report
 
 
 def compare_strategy_robustness(
@@ -252,6 +272,7 @@ def compare_strategy_robustness(
                     **item.get("optimizer_kwargs", {}),
                 },
                 code=item.get("code"),
+                record_experiment=False,
             )
             rows.append(report.summary_row())
         except Exception as exc:
@@ -777,6 +798,131 @@ def _report_section(data: dict) -> dict:
     }
 
 
+def _finalize_validation_record(
+        report: RobustnessReport,
+        *,
+        strategy_name: str,
+        param_ranges: dict,
+        method: str,
+        optimizer_kwargs: dict,
+        config: ValidationConfig,
+        code: str | None,
+        record: bool,
+        experiment_name: str | None,
+        experiment_store,
+):
+    engine_keys = {
+        "init_cash", "commission", "commission_min", "slippage",
+        "impact_coefficient", "max_slippage", "participation_rate",
+        "trade_unit", "rf", "t_plus_1", "price_limit", "stamp_tax",
+        "transfer_fee", "limit_queue_fill_ratio", "order_ttl_bars",
+        "execution_model", "seed",
+    }
+    engine_config = {
+        key: value for key, value in optimizer_kwargs.items()
+        if key in engine_keys
+    }
+    if code is not None:
+        engine_config["code"] = code
+    normalized_ranges = _jsonable(param_ranges)
+    identity = {
+        "kind": "validation",
+        "code_version": get_code_version(),
+        "data": {
+            key: report.data.get(key)
+            for key in ("symbol", "data_version", "start", "end", "rows")
+        },
+        "strategy": report.strategy.get("metadata_hash"),
+        "strategy_key": report.strategy.get("key"),
+        "parameters": report.selected_params,
+        "parameter_ranges": normalized_ranges,
+        "metric": report.metric,
+        "method": method,
+        "validation_config": asdict(config),
+        "engine_config": engine_config,
+    }
+    report.reproducibility_key = stable_hash(identity)
+    payload = report.to_dict()
+    payload.pop("created_at", None)
+    payload.pop("experiment_id", None)
+    payload.pop("result_hash", None)
+    report.result_hash = stable_hash(payload)
+    if not record:
+        return
+
+    from research.experiments import (
+        CostAssumptions,
+        ExperimentRecord,
+        ExperimentStore,
+    )
+
+    costs = CostAssumptions(
+        init_cash=engine_config.get("init_cash", 1_000_000),
+        commission=engine_config.get("commission", 0.00025),
+        commission_min=engine_config.get("commission_min", 5.0),
+        slippage=engine_config.get("slippage", 0.001),
+        impact_coefficient=engine_config.get("impact_coefficient", 0.02),
+        max_slippage=engine_config.get("max_slippage", 0.05),
+        participation_rate=engine_config.get("participation_rate", 0.05),
+        lot_size=engine_config.get("trade_unit", 100),
+        stamp_tax=engine_config.get("stamp_tax", True),
+        transfer_fee=engine_config.get("transfer_fee", True),
+        t_plus_1=engine_config.get("t_plus_1", True),
+        price_limit=engine_config.get("price_limit", True),
+        limit_queue_fill_ratio=engine_config.get(
+            "limit_queue_fill_ratio", 0.25
+        ),
+        order_ttl_bars=engine_config.get("order_ttl_bars", 5),
+        execution_model=engine_config.get("execution_model", "realistic"),
+        rf=engine_config.get("rf", 0.0),
+    )
+    record_obj = ExperimentRecord(
+        experiment_id=(
+            datetime.now().strftime("%Y%m%dT%H%M%S%f")
+            + "_validation_"
+            + report.reproducibility_key[:8]
+        ),
+        name=experiment_name or f"{report.strategy.get('name')} 稳健性验证",
+        kind="validation",
+        status="completed",
+        created_at=report.created_at,
+        code_version=get_code_version(),
+        environment={"python": sys.version.split()[0]},
+        data={"dataset": report.data},
+        strategy=report.strategy,
+        parameters=report.selected_params,
+        parameter_ranges=normalized_ranges,
+        cost_assumptions=costs.to_dict(),
+        engine_config={
+            **engine_config,
+            "metric": report.metric,
+            "method": method,
+            "validation_config": asdict(config),
+        },
+        random_seed=(
+            engine_config.get("seed")
+            if engine_config.get("seed") is not None
+            else config.monte_carlo_seed
+        ),
+        signal={},
+        result={
+            "summary": report.summary_row(),
+            "overfitting": report.overfitting,
+            "result_hash": report.result_hash,
+        },
+        reproducibility_key=report.reproducibility_key,
+        result_hash=report.result_hash,
+        warnings=report.warnings,
+    )
+    store = experiment_store if isinstance(experiment_store, ExperimentStore) \
+        else ExperimentStore(experiment_store)
+    store.write(
+        record_obj,
+        results=pd.DataFrame([report.summary_row()]),
+    )
+    report.experiment_id = record_obj.experiment_id
+
+
 def _jsonable(value):
     if isinstance(value, dict):
         return {key: _jsonable(item) for key, item in value.items()}
@@ -784,6 +930,8 @@ def _jsonable(value):
         return [_jsonable(item) for item in value]
     if isinstance(value, tuple):
         return [_jsonable(item) for item in value]
+    if isinstance(value, range):
+        return list(value)
     if isinstance(value, (np.integer,)):
         return int(value)
     if isinstance(value, (np.floating,)):
