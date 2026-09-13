@@ -6,6 +6,7 @@
 
 - 项目目标与边界：[docs/PROJECT_CHARTER.md](docs/PROJECT_CHARTER.md)
 - 三阶段准入标准：[docs/TRADING_STAGES.md](docs/TRADING_STAGES.md)
+- 目标系统架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
