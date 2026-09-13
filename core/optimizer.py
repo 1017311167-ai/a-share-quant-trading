@@ -194,11 +194,23 @@ def optimize(df, strategy_cls, param_grid, metric: str = "夏普比率",
             costs=CostAssumptions(
                 init_cash=engine_kwargs.get("init_cash", 1_000_000),
                 commission=engine_kwargs.get("commission", 0.00025),
+                commission_min=engine_kwargs.get("commission_min", 5.0),
                 slippage=engine_kwargs.get("slippage", 0.001),
+                impact_coefficient=engine_kwargs.get("impact_coefficient", 0.02),
+                max_slippage=engine_kwargs.get("max_slippage", 0.05),
+                participation_rate=engine_kwargs.get("participation_rate", 0.05),
+                lot_size=engine_kwargs.get("trade_unit", 100),
                 stamp_tax=engine_kwargs.get("stamp_tax", True),
                 transfer_fee=engine_kwargs.get("transfer_fee", True),
                 t_plus_1=engine_kwargs.get("t_plus_1", True),
                 price_limit=engine_kwargs.get("price_limit", True),
+                limit_queue_fill_ratio=engine_kwargs.get(
+                    "limit_queue_fill_ratio", 0.25
+                ),
+                order_ttl_bars=engine_kwargs.get("order_ttl_bars", 5),
+                execution_model=engine_kwargs.get(
+                    "execution_model", "realistic"
+                ),
                 rf=engine_kwargs.get("rf", 0.0),
             ),
             code=engine_kwargs.get("code"),

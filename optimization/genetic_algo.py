@@ -136,6 +136,10 @@ def genetic_optimize(df, strategy_name, param_ranges, metric: str = "夏普比�
                      init_cash=1_000_000, commission=0.00025, slippage=0.001,
                      code=None, rf=0.0, t_plus_1=True, price_limit=True,
                      stamp_tax=True, transfer_fee=True,
+                     commission_min=5.0, participation_rate=0.05,
+                     impact_coefficient=0.02, max_slippage=0.05,
+                     limit_queue_fill_ratio=0.25, order_ttl_bars=5,
+                     execution_model="realistic", trade_unit=100,
                      pop_size=20, n_generations=10, cxpb=0.5, mutpb=0.2,
                      seed=None, max_workers=None, verbose=True,
                      progress_cb=None) -> dict:
@@ -180,7 +184,11 @@ def genetic_optimize(df, strategy_name, param_ranges, metric: str = "夏普比�
     grid = parse_ranges(param_ranges)
     param_names = list(grid.keys())
     engine_kwargs = build_engine_kwargs(init_cash, commission, slippage, code, rf,
-                                        t_plus_1, price_limit, stamp_tax, transfer_fee)
+                                        t_plus_1, price_limit, stamp_tax, transfer_fee,
+                                        commission_min, participation_rate,
+                                        impact_coefficient, max_slippage,
+                                        limit_queue_fill_ratio, order_ttl_bars,
+                                        execution_model, trade_unit)
     toolbox = _make_toolbox(param_names, grid, mutpb)
 
     pop = toolbox.population(n=pop_size)

@@ -1,5 +1,7 @@
 """
-基于 VectorBT 封装的 A 股回测引擎
+A 股回测引擎
+
+默认使用逐 K 线现实成交模型；VectorBT 路径保留为显式可选的历史模型。
 
 用法:
     bt = BacktestEngine(df, entries, exits,
@@ -11,14 +13,16 @@
     bt.get_metrics()     # 获取指标字典
     bt.plot()            # 获取图表字典
 
-交易规则（当前版本，默认全部启用，可用参数关闭）:
-    - 每次买入为全仓：可用资金全部买入，按整手向下取整，剩余资金保留现金
-    - 佣金买卖双向收取；滑点按价格比例
-    - T+1：买卖信号统一顺延到下一交易日执行（收盘产生信号、次日成交）
-    - 涨跌停：涨停日买不进、跌停日卖不出，信号顺延到可成交日（最多 limit_defer_max 天）
-    - 印花税（卖出 0.05%）+ 过户费（双向 0.001%）
-    注意：涨跌停用复权收盘价近似判断，除权除息日可能偶有误判（影响很小）；
-    佣金最低 5 元暂未计（对小资金回测有影响，大资金可忽略）。
+默认成交规则:
+    - 收盘信号在下一根 K 线开盘附近成交，避免使用信号日收盘价产生前视偏差
+    - 买入按可用资金计算目标数量，卖出受 T+1 可用持仓限制
+    - 佣金按成交金额计算，每笔订单最低佣金默认 5 元
+    - 单根 K 线成交量参与率默认 5%，超过容量时产生部分成交并保留挂单
+    - 滑点由基础滑点和成交量冲击成本组成，并受最大滑点限制
+    - 涨停或跌停封板时不能成交；开板时按排队比例撮合
+    - 成交量为 0 或标记停牌时跳过撮合
+    - 卖出收印花税 0.05%，买卖双向收过户费 0.001%
+    - VectorBT 路径仅作为显式选择的历史模型，不再是默认成交模型
 
 运行测试:
     python core/backtest_engine.py
@@ -47,7 +51,13 @@ try:
 except ImportError:  # vectorbt 未安装时延迟报错，给出更友好的提示
     vbt = None
 
-from utils.config import STAMP_TAX_RATE, TRANSFER_FEE_RATE, get_price_limit
+from core.execution_model import ExecutionConfig, RealisticExecutionSimulator
+from utils.config import (
+    COMMISSION_MIN,
+    STAMP_TAX_RATE,
+    TRANSFER_FEE_RATE,
+    get_price_limit,
+)
 
 # ---- 常量 ----
 
@@ -70,7 +80,7 @@ _FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 # ---- 回测引擎 ----
 
 class BacktestEngine:
-    """A股回测引擎（VectorBT 封装）"""
+    """A股事件驱动回测引擎，兼容可选 VectorBT 路径。"""
 
     def __init__(
         self,
@@ -89,6 +99,13 @@ class BacktestEngine:
         stamp_tax: bool = True,
         transfer_fee: bool = True,
         limit_defer_max: int = 5,
+        commission_min: float = COMMISSION_MIN,
+        participation_rate: float = 0.05,
+        impact_coefficient: float = 0.02,
+        max_slippage: float = 0.05,
+        limit_queue_fill_ratio: float = 0.25,
+        order_ttl_bars: int | None = None,
+        execution_model: str = "realistic",
     ):
         """
         参数:
@@ -106,8 +123,20 @@ class BacktestEngine:
             stamp_tax:  True 时卖出收取印花税 0.05%
             transfer_fee: True 时买卖双向收取过户费 0.001%
             limit_defer_max: 涨跌停导致信号无法成交时，最多顺延的天数
+            commission_min: 每笔订单最低佣金，默认 5 元
+            participation_rate: 单根 K 线最大成交量参与率，默认 5%
+            impact_coefficient: 成交量冲击成本系数
+            max_slippage: 单边最大滑点
+            limit_queue_fill_ratio: 涨跌停开板时的排队成交比例
+            order_ttl_bars: 未完成订单有效 K 线数；默认使用 limit_defer_max
+            execution_model: "realistic"（默认）或 "vectorbt"（历史模型）
         """
-        self._check_env()
+        if execution_model not in ("realistic", "vectorbt"):
+            raise ValueError(
+                f"未知成交模型：{execution_model!r}，可选 realistic / vectorbt"
+            )
+        if execution_model == "vectorbt":
+            self._check_env()
         self.df = self._prepare_df(df)
         self.entries = self._prepare_signals(entries, "entries")
         self.exits = self._prepare_signals(exits, "exits")
@@ -133,6 +162,22 @@ class BacktestEngine:
                 raise ValueError(f"{name} 必须是布尔值：{val!r}")
         if not isinstance(limit_defer_max, int) or limit_defer_max < 1:
             raise ValueError(f"limit_defer_max 必须为正整数：{limit_defer_max!r}")
+        if commission_min < 0:
+            raise ValueError(f"最低佣金不能小于 0：{commission_min!r}")
+        if not 0 < participation_rate <= 1:
+            raise ValueError(f"成交量参与率必须在 (0, 1] 之间：{participation_rate!r}")
+        if impact_coefficient < 0:
+            raise ValueError(f"冲击成本系数不能小于 0：{impact_coefficient!r}")
+        if not 0 <= max_slippage < 1:
+            raise ValueError(f"最大滑点必须在 [0, 1) 之间：{max_slippage!r}")
+        if not 0 <= limit_queue_fill_ratio <= 1:
+            raise ValueError(
+                f"涨跌停排队成交比例必须在 [0, 1] 之间：{limit_queue_fill_ratio!r}"
+            )
+        if order_ttl_bars is None:
+            order_ttl_bars = limit_defer_max
+        if not isinstance(order_ttl_bars, int) or order_ttl_bars < 1:
+            raise ValueError(f"order_ttl_bars 必须为正整数：{order_ttl_bars!r}")
 
         self.init_cash = float(init_cash)
         self.commission = float(commission)
@@ -145,9 +190,19 @@ class BacktestEngine:
         self.stamp_tax = stamp_tax
         self.transfer_fee = transfer_fee
         self.limit_defer_max = limit_defer_max
+        self.commission_min = float(commission_min)
+        self.participation_rate = float(participation_rate)
+        self.impact_coefficient = float(impact_coefficient)
+        self.max_slippage = float(max_slippage)
+        self.limit_queue_fill_ratio = float(limit_queue_fill_ratio)
+        self.order_ttl_bars = order_ttl_bars
+        self.execution_model = execution_model
 
         self.portfolio = None   # 回测结果（run() 之后可用）
         self._metrics = None    # 指标缓存（run() 之后可用）
+        self.fills = None
+        self.orders = None
+        self.execution_stats = None
 
     # ---- 内部工具 ----
 
@@ -270,6 +325,38 @@ class BacktestEngine:
 
     def run(self) -> "BacktestEngine":
         """执行回测，完成后可调用 get_metrics() 和 plot()"""
+        if self.execution_model == "realistic":
+            result = RealisticExecutionSimulator(
+                self.df,
+                self._entries_raw,
+                self._exits_raw,
+                ExecutionConfig(
+                    init_cash=self.init_cash,
+                    commission=self.commission,
+                    commission_min=self.commission_min,
+                    slippage=self.slippage,
+                    impact_coefficient=self.impact_coefficient,
+                    max_slippage=self.max_slippage,
+                    participation_rate=self.participation_rate,
+                    lot_size=self.trade_unit,
+                    t_plus_1=self.t_plus_1,
+                    price_limit=self.price_limit,
+                    stamp_tax=self.stamp_tax,
+                    transfer_fee=self.transfer_fee,
+                    limit_queue_fill_ratio=self.limit_queue_fill_ratio,
+                    order_ttl_bars=self.order_ttl_bars,
+                    code=self.code,
+                ),
+            ).run()
+            self.portfolio = result.portfolio
+            self.fills = result.fills
+            self.orders = result.orders
+            self.execution_stats = result.stats
+            self.entries = result.executed_entries
+            self.exits = result.executed_exits
+            self._metrics = self._compute_realistic_metrics()
+            return self
+
         self.entries, self.exits, fees = self._apply_a_share_rules()
         self.portfolio = vbt.Portfolio.from_signals(
             close=self.df["close"],
@@ -319,12 +406,71 @@ class BacktestEngine:
         return {"equity": self._plot_equity(), "position": self._plot_position()}
 
     def get_portfolio(self):
-        """返回 vectorbt 原始回测对象（高级用法，需先 run()）"""
+        """返回兼容分析接口的组合结果对象（需先 run()）"""
         if self.portfolio is None:
             raise RuntimeError("请先调用 run() 执行回测")
         return self.portfolio
 
+    def get_fills(self) -> pd.DataFrame:
+        """返回逐笔成交记录。"""
+        if self.fills is None:
+            raise RuntimeError("请先调用 run() 执行回测")
+        return self.fills.copy()
+
+    def get_orders(self) -> pd.DataFrame:
+        """返回订单最终状态。"""
+        if self.orders is None:
+            raise RuntimeError("请先调用 run() 执行回测")
+        return self.orders.copy()
+
+    def get_execution_stats(self) -> dict:
+        """返回成交、费用、滑点和部分成交统计。"""
+        if self.execution_stats is None:
+            raise RuntimeError("请先调用 run() 执行回测")
+        return dict(self.execution_stats)
+
     # ---- 指标计算 ----
+
+    def _compute_realistic_metrics(self) -> dict:
+        """从现实成交台账计算绩效指标。"""
+        from core.risk_analysis import analyze_portfolio
+
+        risk_metrics = analyze_portfolio(
+            self.portfolio, rf=self.rf
+        ).compute_metrics()
+        stats = self.execution_stats or {}
+        orders = self.orders if self.orders is not None else pd.DataFrame()
+        if len(orders):
+            requested = float(orders["requested"].fillna(0).sum())
+            filled = float(orders["filled"].fillna(0).sum())
+            fill_rate = filled / requested if requested > 0 else 0.0
+        else:
+            fill_rate = 0.0
+        benchmark = float(
+            self.df["close"].iloc[-1] / self.df["close"].iloc[0] - 1
+        )
+        metrics = {
+            "累计收益率": risk_metrics["累计收益率"],
+            "年化收益率": risk_metrics["年化收益率"],
+            "年化波动率": risk_metrics["年化波动率"],
+            "夏普比率": risk_metrics["夏普比率"],
+            "卡玛比率": risk_metrics["卡玛比率"],
+            "最大回撤": risk_metrics["最大回撤"],
+            "胜率": risk_metrics["胜率"],
+            "盈亏比": risk_metrics["盈亏比"],
+            "总交易次数": risk_metrics["总交易次数"],
+            "总手续费": float(stats.get("total_fee", 0.0)),
+            "总佣金": float(stats.get("total_commission", 0.0)),
+            "总印花税": float(stats.get("total_stamp_tax", 0.0)),
+            "成交笔数": int(stats.get("fill_count", 0)),
+            "订单数": int(stats.get("order_count", 0)),
+            "部分成交订单数": int(stats.get("partial_order_count", 0)),
+            "成交率": float(fill_rate),
+            "平均滑点": float(stats.get("average_slippage", 0.0)),
+            "期末总资产": float(self.portfolio.value().iloc[-1]),
+            "基准收益率": benchmark,
+        }
+        return metrics
 
     def _compute_metrics(self) -> dict:
         """从 vectorbt 统计结果中提取指标"""
@@ -510,8 +656,8 @@ def run_test():
     print("✓ 图表生成通过（净值曲线 2 条线，持仓图含买卖标记）")
     print()
 
-    # ---- 测试 2：正确性验证（关闭A股规则、无费用滑点、无整手限制 => 全仓买入持有）----
-    print("===== 测试 2：正确性验证（零费用零滑点 = 理论买入持有收益）=====")
+    # ---- 测试 2：正确性验证（次日开盘买入，避免信号日收盘前视）----
+    print("===== 测试 2：正确性验证（次日开盘买入 + 期末收盘估值）=====")
     entries_hold = pd.Series(False, index=df.index)
     entries_hold.iloc[0] = True
     exits_hold = pd.Series(False, index=df.index)
@@ -519,12 +665,23 @@ def run_test():
 
     bt_hold = BacktestEngine(
         df, entries_hold, exits_hold,
-        init_cash=1_000_000, commission=0.0, slippage=0.0, trade_unit=None,
+        init_cash=1_000_000, commission=0.0, commission_min=0.0,
+        slippage=0.0, trade_unit=None,
+        impact_coefficient=0.0, participation_rate=1.0,
         t_plus_1=False, price_limit=False, stamp_tax=False, transfer_fee=False,
     )
     bt_hold.run()
     actual = bt_hold.get_metrics()["累计收益率"]
-    expected = df["close"].iloc[-1] / df["close"].iloc[0] - 1
+    fills = bt_hold.get_fills()
+    assert len(fills) == 1, "未设置卖出成交时，买入成交应只有一笔"
+    assert fills.iloc[0]["日期"] == bt_hold.df.index[1], \
+        "首日收盘信号应在次日开盘成交"
+    filled_qty = int(fills.iloc[0]["数量"])
+    fill_price = float(fills.iloc[0]["价格"])
+    remaining_cash = 1_000_000 - filled_qty * fill_price
+    expected = (
+        remaining_cash + filled_qty * df["close"].iloc[-1]
+    ) / 1_000_000 - 1
     assert abs(actual - expected) < 1e-6, f"回测逻辑有误：{actual:.6f} != {expected:.6f}"
 
     equity_final = bt_hold.get_portfolio().value().iloc[-1]
@@ -536,13 +693,15 @@ def run_test():
     print("===== 测试 3：T+1 规则（信号次日执行）=====")
     idx3 = pd.date_range("2024-01-01", periods=10, freq="D")
     flat = pd.DataFrame({
-        "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "volume": 10000,
+        "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0,
+        "volume": 10_000_000,
     }, index=idx3)
     e3 = pd.Series(False, index=idx3); e3.iloc[2] = True   # 第 2 天产生买入信号
     x3 = pd.Series(False, index=idx3); x3.iloc[4] = True   # 第 4 天产生卖出信号
 
     bt3 = BacktestEngine(flat, e3, x3, t_plus_1=True, price_limit=False,
-                         stamp_tax=False, transfer_fee=False).run()
+                         stamp_tax=False, transfer_fee=False,
+                         impact_coefficient=0.0, participation_rate=1.0).run()
     mask3 = bt3.get_portfolio().position_mask()
     assert mask3.iloc[2] == 0, "信号当天不应持仓（次日执行）"
     assert mask3.iloc[3] == 1, "买入信号应顺延到第 3 天执行"
@@ -552,7 +711,8 @@ def run_test():
     # 同日买卖冲突：保留卖出、丢弃买入 → 空仓时不成交
     x3b = pd.Series(False, index=idx3); x3b.iloc[2] = True  # 与买入同一天
     bt3b = BacktestEngine(flat, e3, x3b, t_plus_1=True, price_limit=False,
-                          stamp_tax=False, transfer_fee=False).run()
+                          stamp_tax=False, transfer_fee=False,
+                          impact_coefficient=0.0, participation_rate=1.0).run()
     assert (bt3b.get_portfolio().position_mask() == 0).all(), "同日买卖冲突应不成交"
     print("✓ T+1：信号次日执行、同日冲突风控优先（保留卖出丢弃买入）")
     print()
@@ -564,14 +724,17 @@ def run_test():
     close4.iloc[5] = 11.0   # 第 5 天涨停（10 * 1.1 = 11.00）
     close4.iloc[11] = 9.0   # 第 11 天跌停（10 * 0.9 = 9.00）
     df4 = pd.DataFrame({
-        "open": close4, "high": close4, "low": close4, "close": close4, "volume": 10000,
+        "open": close4, "high": close4, "low": close4, "close": close4,
+        "volume": 10_000_000,
     }, index=idx4)
     e4 = pd.Series(False, index=idx4); e4.iloc[4] = True   # 买入信号 → 次日(第5天)涨停
     x4 = pd.Series(False, index=idx4); x4.iloc[10] = True  # 卖出信号 → 次日(第11天)跌停
 
     bt4 = BacktestEngine(df4, e4, x4, code="600519",
                          t_plus_1=True, price_limit=True,
-                         stamp_tax=False, transfer_fee=False).run()
+                         stamp_tax=False, transfer_fee=False,
+                         impact_coefficient=0.0,
+                         participation_rate=1.0).run()
     mask4 = bt4.get_portfolio().position_mask()
     assert mask4.iloc[5] == 0, "涨停日应买不进（信号顺延）"
     assert mask4.iloc[6] == 1, "买入应顺延到第 6 天成交"
@@ -581,7 +744,9 @@ def run_test():
     # 对照组：关闭涨跌停规则时，第 5 天直接买入
     bt4b = BacktestEngine(df4, e4, x4, code="600519",
                           t_plus_1=True, price_limit=False,
-                          stamp_tax=False, transfer_fee=False).run()
+                          stamp_tax=False, transfer_fee=False,
+                          impact_coefficient=0.0,
+                          participation_rate=1.0).run()
     assert bt4b.get_portfolio().position_mask().iloc[5] == 1, "关闭规则时涨停日应能买入"
     print("✓ 涨跌停：涨停买不进顺延买入、跌停卖不出顺延卖出（对照组成立）")
     print()
@@ -591,9 +756,13 @@ def run_test():
     e5 = pd.Series(False, index=df.index); e5.iloc[100] = True
     x5 = pd.Series(False, index=df.index); x5.iloc[200] = True
     bt5_on = BacktestEngine(df, e5, x5, code="600519", init_cash=1_000_000,
-                            commission=0.0, slippage=0.0).run()          # 仅印花税+过户费
+                            commission=0.0, commission_min=0.0, slippage=0.0,
+                            impact_coefficient=0.0,
+                            participation_rate=1.0).run()                # 仅印花税+过户费
     bt5_off = BacktestEngine(df, e5, x5, code="600519", init_cash=1_000_000,
-                             commission=0.0, slippage=0.0,
+                             commission=0.0, commission_min=0.0, slippage=0.0,
+                             impact_coefficient=0.0,
+                             participation_rate=1.0,
                              stamp_tax=False, transfer_fee=False).run()  # 零费用
     fees_on = bt5_on.get_metrics()["总手续费"]
     assert fees_on > 0, "启用规则后应产生费用"

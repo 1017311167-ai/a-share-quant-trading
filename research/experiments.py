@@ -17,6 +17,7 @@ from core.risk_analysis import analyze_portfolio
 from data.models import Frequency
 from data.service import load_market_data, load_snapshot
 from strategies.factory import create_strategy
+from utils.config import COMMISSION_MIN
 from utils.versioning import get_code_version, get_environment_info, stable_hash
 
 
@@ -33,22 +34,37 @@ class CostAssumptions:
 
     init_cash: float = 1_000_000.0
     commission: float = 0.00025
+    commission_min: float = COMMISSION_MIN
     slippage: float = 0.001
+    impact_coefficient: float = 0.02
+    max_slippage: float = 0.05
+    participation_rate: float = 0.05
+    lot_size: int | None = 100
     stamp_tax: bool = True
     transfer_fee: bool = True
     t_plus_1: bool = True
     price_limit: bool = True
+    limit_queue_fill_ratio: float = 0.25
+    order_ttl_bars: int = 5
+    execution_model: str = "realistic"
     rf: float = 0.0
 
     def __post_init__(self):
-        for name in ("init_cash", "commission", "slippage", "rf"):
+        for name in (
+            "init_cash", "commission", "commission_min", "slippage",
+            "impact_coefficient", "max_slippage", "participation_rate",
+            "limit_queue_fill_ratio", "rf",
+        ):
             object.__setattr__(self, name, float(getattr(self, name)))
         for name in ("stamp_tax", "transfer_fee", "t_plus_1", "price_limit"):
             object.__setattr__(self, name, bool(getattr(self, name)))
 
     def to_engine_kwargs(self, *, code: str | None = None) -> dict:
         values = asdict(self)
+        values["trade_unit"] = values.pop("lot_size")
         values["code"] = code
+        values.pop("rf", None)
+        values["rf"] = self.rf
         return values
 
     def to_dict(self) -> dict:
@@ -463,6 +479,14 @@ def reproduce_experiment(experiment_id: str, *, store=None,
                 "price_limit": costs.price_limit,
                 "stamp_tax": costs.stamp_tax,
                 "transfer_fee": costs.transfer_fee,
+                "commission_min": costs.commission_min,
+                "participation_rate": costs.participation_rate,
+                "impact_coefficient": costs.impact_coefficient,
+                "max_slippage": costs.max_slippage,
+                "limit_queue_fill_ratio": costs.limit_queue_fill_ratio,
+                "order_ttl_bars": costs.order_ttl_bars,
+                "execution_model": costs.execution_model,
+                "trade_unit": costs.lot_size,
                 "verbose": False,
                 "record_experiment": False,
             }
@@ -512,6 +536,7 @@ def reproduce_experiment(experiment_id: str, *, store=None,
             configs,
             init_cash=costs.init_cash,
             commission=costs.commission,
+            commission_min=costs.commission_min,
             slippage=costs.slippage,
             start=record.data.get("start") or None,
             end=record.data.get("end") or None,
@@ -521,6 +546,13 @@ def reproduce_experiment(experiment_id: str, *, store=None,
             price_limit=costs.price_limit,
             stamp_tax=costs.stamp_tax,
             transfer_fee=costs.transfer_fee,
+            participation_rate=costs.participation_rate,
+            impact_coefficient=costs.impact_coefficient,
+            max_slippage=costs.max_slippage,
+            limit_queue_fill_ratio=costs.limit_queue_fill_ratio,
+            order_ttl_bars=costs.order_ttl_bars,
+            execution_model=costs.execution_model,
+            trade_unit=costs.lot_size,
             max_workers=1,
             data_map=dfs,
             record_experiment=False,
