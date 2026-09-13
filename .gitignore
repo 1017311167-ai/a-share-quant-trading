@@ -1,0 +1,44 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 行情数据缓存（数据文件较大，不入库）
+data/cache/
+data/raw/
+data/processed/
+*.parquet
+
+# 运行产物
+output/
+logs/
+tmp/
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# 构建产物
+build/
+dist/
+*.spec
+
+# 系统与编辑器文件
+.DS_Store
+.idea/
+.vscode/
+
+# 环境变量与密钥（不要提交，只提交 .env.example 模板）
+.env
+.env.*
+!.env.example
