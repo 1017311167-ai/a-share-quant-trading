@@ -429,6 +429,12 @@ class BacktestEngine:
             raise RuntimeError("请先调用 run() 执行回测")
         return dict(self.execution_stats)
 
+    def get_equity(self) -> pd.Series:
+        """返回账户净值序列。"""
+        if self.portfolio is None:
+            raise RuntimeError("请先调用 run() 执行回测")
+        return self.portfolio.value().copy()
+
     # ---- 指标计算 ----
 
     def _compute_realistic_metrics(self) -> dict:

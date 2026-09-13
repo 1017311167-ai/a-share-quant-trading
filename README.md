@@ -11,6 +11,7 @@
 - 策略元数据与实验复现：[docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)
 - 现实成交模型与成本敏感性：[docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md)
 - 多标的组合回测：[docs/PORTFOLIO_BACKTEST.md](docs/PORTFOLIO_BACKTEST.md)
+- 稳健性与过拟合评估：[docs/VALIDATION.md](docs/VALIDATION.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -76,7 +77,9 @@
 │   └── factory.py         # 策略工厂（按名称创建策略）
 ├── research/              # 策略研究与可复现实验记录
 │   ├── experiments.py     # 实验指纹、结果、环境快照和重放
-│   └── test_research.py   # 离线实验复现测试
+│   ├── validation.py      # 样本内外、Walk-forward、蒙特卡洛和过拟合风险
+│   ├── test_research.py   # 离线实验复现测试
+│   └── test_validation.py # 离线稳健性和过拟合测试
 └── utils/                 # 工具
     ├── config.py          # A股交易规则常量（费用、T+1、涨跌停）
     ├── data_loader.py     # 旧行情入口兼容层
@@ -163,6 +166,7 @@ python3 data/test_data_layer.py       # 数据层测试（交易日历/质量/�
 python3 research/test_research.py     # 策略元数据/信号/实验复现测试（不联网）
 python3 core/test_execution_model.py  # 现实成交与成本敏感性测试（不联网）
 python3 core/test_portfolio_backtest.py # 组合回测目标权重/现金/风险测试（不联网）
+python3 research/test_validation.py   # 样本内/外、Walk-forward、蒙特卡洛和过拟合测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
@@ -184,6 +188,7 @@ python3 strategies/factory.py         # 策略工厂测试（其余模块同理�
 - [x] 事件驱动成交模型：次日开盘、最低佣金、参与率、部分成交、停牌和涨跌停排队
 - [x] 前视偏差修复与佣金/滑点/参与率成本敏感性分析
 - [x] 多标的组合回测（目标权重、再平衡、现金管理和组合风险）
+- [x] 样本内/样本外、滚动、Walk-forward、参数稳定性、蒙特卡洛和过拟合风险
 - [x] 风控与绩效分析（完整指标 + 回撤/月度/年度 + 风控校验 + 报告）
 - [x] A股交易规则（T+1 / 涨跌停 / 印花税过户费，界面可开关）
 - [x] 策略库：双均线 / RSI / 布林带（含策略工厂）
