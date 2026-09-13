@@ -122,7 +122,10 @@ def _run_one(task):
 def run_batch(codes, strategy_configs, init_cash=1_000_000, commission=0.00025,
               slippage=0.001, *, start=None, end=None, rf=0.0, freq="daily",
               t_plus_1=True, price_limit=True, stamp_tax=True, transfer_fee=True,
-              max_workers=None, progress_cb=None) -> dict:
+              max_workers=None, progress_cb=None, data_map=None,
+              record_experiment: bool = True,
+              experiment_name: str | None = None,
+              experiment_store=None) -> dict:
     """多股票 × 多策略批量回测
 
     参数:
@@ -139,12 +142,19 @@ def run_batch(codes, strategy_configs, init_cash=1_000_000, commission=0.00025,
         t_plus_1 / price_limit / stamp_tax / transfer_fee: A股规则开关，同回测引擎
         max_workers:       并发进程数（默认 = min(组合数, CPU 核数)）
         progress_cb:       进度回调 progress_cb(已完成数, 总数)，供界面进度条使用
+        data_map:          可选的已加载行情 {股票代码: DataFrame}，用于测试和重放
+        record_experiment: 是否自动保存实验记录，默认 True
+        experiment_name:   实验名称
+        experiment_store:  自定义 ExperimentStore
 
     返回:
         {"results": 汇总 DataFrame（按 股票代码/策略名称/参数 排序）,
          "details": {组合key: {"metrics": 指标行, "monthly": 月度收益, "trades": 交易明细}},
          "failed": 失败组合及原因列表（异常标的自动跳过，不中断整体任务）,
-         "elapsed": 总用时（秒）}
+         "elapsed": 总用时（秒）,
+         "experiment_id": 自动记录的实验 ID,
+         "reproducibility_key": 实验输入指纹,
+         "result_hash": 实验结果哈希}
     """
     t0 = time.perf_counter()
     if not logger.handlers:
@@ -178,13 +188,21 @@ def run_batch(codes, strategy_configs, init_cash=1_000_000, commission=0.00025,
     # 2. 主进程顺序加载行情数据（避免多进程同时下载互相干扰）
     unit = "个交易日" if freq == "daily" else "根K线"
     dfs = {}
-    for code in codes:
-        try:
-            dfs[code] = load_market_data(code, start, end, freq=freq)
-            logger.info(f"行情数据就绪：{code}（{len(dfs[code])} {unit}）")
-        except Exception as e:
-            logger.warning(f"{code} 行情数据加载失败，该股票全部组合跳过（{type(e).__name__}: {e}）")
-            failed.append(f"{code}：行情数据加载失败（{type(e).__name__}: {e}）")
+    if data_map is not None:
+        for code in codes:
+            if code in data_map:
+                dfs[code] = data_map[code]
+                logger.info(f"使用注入行情：{code}（{len(dfs[code])} {unit}）")
+            else:
+                failed.append(f"{code}：注入行情中缺少该股票")
+    else:
+        for code in codes:
+            try:
+                dfs[code] = load_market_data(code, start, end, freq=freq)
+                logger.info(f"行情数据就绪：{code}（{len(dfs[code])} {unit}）")
+            except Exception as e:
+                logger.warning(f"{code} 行情数据加载失败，该股票全部组合跳过（{type(e).__name__}: {e}）")
+                failed.append(f"{code}：行情数据加载失败（{type(e).__name__}: {e}）")
 
     engine_kwargs = {
         "init_cash": init_cash, "commission": commission, "slippage": slippage,
@@ -239,7 +257,36 @@ def run_batch(codes, strategy_configs, init_cash=1_000_000, commission=0.00025,
     elapsed = time.perf_counter() - t0
     logger.info(f"批量回测完成：成功 {len(rows)} 个组合，失败 {len(failed)} 项，"
                 f"用时 {elapsed:.1f} 秒")
-    return {"results": results, "details": details, "failed": failed, "elapsed": elapsed}
+    out = {"results": results, "details": details, "failed": failed, "elapsed": elapsed}
+    if record_experiment:
+        from research.experiments import CostAssumptions, record_batch_experiment
+
+        record = record_batch_experiment(
+            dfs,
+            codes=list(codes),
+            strategy_configs=valid_configs,
+            output=out,
+            costs=CostAssumptions(
+                init_cash=init_cash,
+                commission=commission,
+                slippage=slippage,
+                stamp_tax=stamp_tax,
+                transfer_fee=transfer_fee,
+                t_plus_1=t_plus_1,
+                price_limit=price_limit,
+                rf=rf,
+            ),
+            start=start,
+            end=end,
+            frequency=freq,
+            max_workers=max_workers,
+            name=experiment_name,
+            store=experiment_store,
+        )
+        out["experiment_id"] = record.experiment_id
+        out["reproducibility_key"] = record.reproducibility_key
+        out["result_hash"] = record.result_hash
+    return out
 
 
 def sort_results(results, by: str = "夏普比率", ascending=None) -> pd.DataFrame:

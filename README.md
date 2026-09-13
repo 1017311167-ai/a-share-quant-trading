@@ -8,6 +8,7 @@
 - 三阶段准入标准：[docs/TRADING_STAGES.md](docs/TRADING_STAGES.md)
 - 目标系统架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 行情数据管线：[docs/DATA_PIPELINE.md](docs/DATA_PIPELINE.md)
+- 策略元数据与实验复现：[docs/EXPERIMENTS.md](docs/EXPERIMENTS.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -60,15 +61,21 @@
 │   └── notifier.py        # 邮件（HTML/附件）+ 企业微信机器人（text/markdown），.env 配置
 ├── strategies/            # 策略库
 │   ├── base.py            # 策略统一接口
+│   ├── metadata.py        # 策略版本与参数 Schema
+│   ├── signals.py         # 标准信号输出与信号哈希
 │   ├── double_ma.py       # 双均线策略（金叉买入 / 死叉卖出）
 │   ├── rsi_strategy.py    # RSI 超买超卖策略
 │   ├── boll_strategy.py   # 布林带突破策略
 │   ├── momentum.py        # 动量策略（N 日涨幅达标买入 / 跌破均线卖出）
 │   ├── turtle_strategy.py # 海龟策略（唐奇安通道突破）
 │   └── factory.py         # 策略工厂（按名称创建策略）
+├── research/              # 策略研究与可复现实验记录
+│   ├── experiments.py     # 实验指纹、结果、环境快照和重放
+│   └── test_research.py   # 离线实验复现测试
 └── utils/                 # 工具
     ├── config.py          # A股交易规则常量（费用、T+1、涨跌停）
-    └── data_loader.py     # 行情下载与缓存：日线（腾讯）+ 1/5/15/30/60 分钟线（新浪）
+    ├── data_loader.py     # 旧行情入口兼容层
+    └── versioning.py      # Git 代码版本和运行环境元数据
 ```
 
 ## 快速开始
@@ -139,6 +146,7 @@ pyinstaller --onefile --windowed --name A股量化回测 ^
   `ABACKTEST_CACHE_DIR` 指向固定目录（如 `D:\abacktest_cache`）保存缓存
 - **数据快照**：可通过 `ABACKTEST_SNAPSHOT_DIR` 指定不可变快照目录，通过
   `ABACKTEST_CALENDAR_DIR` 指定交易日历缓存目录
+- **实验记录**：可通过 `ABACKTEST_EXPERIMENT_DIR` 指定实验清单和结果目录
 
 ## 如何运行测试
 
@@ -147,6 +155,7 @@ pyinstaller --onefile --windowed --name A股量化回测 ^
 ```bash
 python3 gui/main_window.py --test     # 桌面版冒烟测试（页面/图表/表格/线程/推送链路，不联网）
 python3 data/test_data_layer.py       # 数据层测试（交易日历/质量/快照/实时行情，不联网）
+python3 research/test_research.py     # 策略元数据/信号/实验复现测试（不联网）
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
@@ -176,6 +185,8 @@ python3 strategies/factory.py         # 策略工厂测试（其余模块同理�
 - [x] 桌面版界面（PyQt6：5 个标签页，任务全部子线程执行，pyqtgraph 图表，
       表格排序/复制/导出，进度条 + 日志框，支持打包成 exe）
 - [x] 更多策略：动量、海龟（策略库共 5 个，网页版/桌面版全部接入）
+- [x] 统一策略元数据、参数 Schema、标准信号和策略版本机制
+- [x] 可复现实验记录（代码版本、数据版本、参数、成本、结果和重放）
 - [x] 回测完成自动推送（回测页/批量页：勾选自动推送或手动按钮，邮件 + 企业微信）
 - [x] 分钟线行情（1/5/15/30/60 分钟，新浪数据源）+ 日线/分钟线无缝切换回测，
       年化指标按频率自动折算

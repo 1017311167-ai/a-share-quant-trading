@@ -123,11 +123,18 @@ def grid_search(df, strategy_cls, param_grid, metric: str = "夏普比率",
     rows, _ = _search(df, strategy_cls, param_grid, metric, engine_kwargs)
     result = pd.DataFrame(rows)
     ascending = metric == "最大回撤"  # 回撤越小越好
-    return result.sort_values(metric, ascending=ascending).reset_index(drop=True)
+    tie_columns = [column for column in result.columns if column != metric]
+    return result.sort_values(
+        [metric, *tie_columns],
+        ascending=[ascending, *([True] * len(tie_columns))],
+        kind="stable",
+    ).reset_index(drop=True)
 
 
 def optimize(df, strategy_cls, param_grid, metric: str = "夏普比率",
-             engine_kwargs=None) -> dict:
+             engine_kwargs=None, *, record_experiment: bool = True,
+             experiment_name: str | None = None,
+             experiment_store=None) -> dict:
     """寻优入口：返回结果表、最优参数行和跳过数
 
     返回:
@@ -142,8 +149,66 @@ def optimize(df, strategy_cls, param_grid, metric: str = "夏普比率",
     rows, skipped = _search(df, strategy_cls, param_grid, metric, engine_kwargs)
     result = pd.DataFrame(rows)
     ascending = metric == "最大回撤"
-    result = result.sort_values(metric, ascending=ascending).reset_index(drop=True)
-    return {"results": result, "best": result.iloc[0], "skipped": skipped, "metric": metric}
+    tie_columns = [column for column in result.columns if column != metric]
+    result = result.sort_values(
+        [metric, *tie_columns],
+        ascending=[ascending, *([True] * len(tie_columns))],
+        kind="stable",
+    ).reset_index(drop=True)
+    out = {
+        "results": result,
+        "best": result.iloc[0],
+        "skipped": skipped,
+        "metric": metric,
+    }
+    if record_experiment:
+        from research.experiments import (
+            CostAssumptions,
+            record_optimization_experiment,
+        )
+
+        engine_kwargs = dict(engine_kwargs or {})
+        best_row = result.iloc[0]
+        best_params = {
+            key: int(best_row[key]) if isinstance(param_grid[key][0], int)
+            else float(best_row[key])
+            for key in param_grid
+        }
+        metric_columns = [
+            column for column in METRICS if column in result.columns
+        ]
+        record = record_optimization_experiment(
+            df,
+            strategy_name=strategy_cls.strategy_key,
+            parameter_ranges=param_grid,
+            metric=metric,
+            method="core_grid",
+            output={
+                "best_params": best_params,
+                "best_value": float(best_row[metric]),
+                "best_metrics": {
+                    key: float(best_row[key]) for key in metric_columns
+                },
+                "results": result,
+            },
+            costs=CostAssumptions(
+                init_cash=engine_kwargs.get("init_cash", 1_000_000),
+                commission=engine_kwargs.get("commission", 0.00025),
+                slippage=engine_kwargs.get("slippage", 0.001),
+                stamp_tax=engine_kwargs.get("stamp_tax", True),
+                transfer_fee=engine_kwargs.get("transfer_fee", True),
+                t_plus_1=engine_kwargs.get("t_plus_1", True),
+                price_limit=engine_kwargs.get("price_limit", True),
+                rf=engine_kwargs.get("rf", 0.0),
+            ),
+            code=engine_kwargs.get("code"),
+            name=experiment_name,
+            store=experiment_store,
+        )
+        out["experiment_id"] = record.experiment_id
+        out["reproducibility_key"] = record.reproducibility_key
+        out["result_hash"] = record.result_hash
+    return out
 
 
 def build_heatmap(results, x_param: str, y_param: str, metric: str) -> go.Figure:

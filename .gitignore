@@ -24,6 +24,7 @@ data/processed/
 output/
 logs/
 tmp/
+experiments/
 *.sqlite
 *.sqlite3
 *.db

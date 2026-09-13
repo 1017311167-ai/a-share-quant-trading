@@ -225,7 +225,7 @@ class RiskAnalyzer:
             "卡玛比率": float(calmar),
             "最大回撤": float(max_dd),
             "胜率": float(win_rate) if win_rate is not None else None,
-            "盈亏比": float(profit_loss_ratio),
+            "盈亏比": float(profit_loss_ratio) if profit_loss_ratio is not None else None,
             "总交易次数": int(n_trades),
         }
 

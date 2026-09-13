@@ -14,18 +14,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from strategies.base import Strategy
+from strategies.metadata import ParameterSpec
 
 
 class MomentumStrategy(Strategy):
     """动量策略"""
 
+    strategy_key = "momentum"
     name = "动量策略"
-
-    PARAMS_HELP = {
-        "momentum_period": "动量回看天数（过去 N 日涨幅），默认 20",
-        "threshold": "入场动量阈值（小数，如 0.05 = 涨 5%），默认 0.05",
-        "exit_ma": "出场均线周期（天），跌破卖出，默认 60",
-    }
+    version = "1.0.0"
+    description = "过去 N 日涨幅超过阈值买入，跌破均线卖出"
+    required_columns = ("close",)
+    tags = ("momentum", "trend")
+    PARAMETER_SPECS = (
+        ParameterSpec(
+            "momentum_period", 20, "动量回看天数，默认 20",
+            kind="int", minimum=1, step=1,
+        ),
+        ParameterSpec(
+            "threshold", 0.05, "入场动量阈值，0.05 表示 5%",
+            kind="float", minimum=0.0, exclusive_minimum=True, step=0.01,
+        ),
+        ParameterSpec(
+            "exit_ma", 60, "出场均线周期（天），默认 60",
+            kind="int", minimum=1, step=1,
+        ),
+    )
 
     def __init__(self, momentum_period: int = 20, threshold: float = 0.05, exit_ma: int = 60):
         if not isinstance(momentum_period, int) or momentum_period < 1:
@@ -37,10 +51,6 @@ class MomentumStrategy(Strategy):
         self.momentum_period = momentum_period
         self.threshold = float(threshold)
         self.exit_ma = exit_ma
-
-    @classmethod
-    def default_params(cls) -> dict:
-        return {"momentum_period": 20, "threshold": 0.05, "exit_ma": 60}
 
     def generate_signals(self, df: pd.DataFrame):
         """计算动量买卖信号

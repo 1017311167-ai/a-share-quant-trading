@@ -24,9 +24,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from core.backtest_engine import BacktestEngine
 from core.optimizer import METRIC_FMT, METRICS, build_heatmap, optimize, ranges_to_grid
 from core.risk_analysis import analyze_portfolio, trades_table
+from research.experiments import CostAssumptions, run_backtest_experiment
 from strategies import (BollStrategy, DoubleMAStrategy, MomentumStrategy,
                         RSIStrategy, TurtleStrategy)
 from strategies.factory import create_strategy, get_available_strategies
@@ -88,22 +88,37 @@ def run_pipeline(code, start, end, strategy, params, init_cash, commission, slip
     if df.empty:
         raise ValueError("没有下载到行情数据，请检查股票代码和日期区间")
 
-    strategy_obj = create_strategy(strategy, **params) if isinstance(strategy, str) else strategy(**params)
-    entries, exits = strategy_obj.generate_signals(df)
-    engine = BacktestEngine(df, entries, exits,
-                            init_cash=init_cash, commission=commission,
-                            slippage=slippage, rf=rf, code=code,
-                            t_plus_1=t_plus_1, price_limit=price_limit,
-                            stamp_tax=stamp_tax, transfer_fee=transfer_fee).run()
-    analyzer = analyze_portfolio(engine.portfolio)
+    run = run_backtest_experiment(
+        df,
+        strategy,
+        params,
+        code=code,
+        symbol=code,
+        costs=CostAssumptions(
+            init_cash=init_cash,
+            commission=commission,
+            slippage=slippage,
+            stamp_tax=stamp_tax,
+            transfer_fee=transfer_fee,
+            t_plus_1=t_plus_1,
+            price_limit=price_limit,
+            rf=rf,
+        ),
+        name=f"{code} {strategy} 网页回测",
+    )
+    strategy_obj = run["strategy"]
+    engine = run["engine"]
+    analyzer = analyze_portfolio(engine.portfolio, rf=rf)
     return {
         "df": df,
         "strategy": strategy_obj,
         "engine": engine,
-        "metrics": engine.get_metrics(),
+        "metrics": run["metrics"]["engine"],
         "risk_metrics": analyzer.compute_metrics(),
         "analyzer": analyzer,
         "trades_df": build_trades_df(engine.portfolio),
+        "experiment_id": run["experiment_id"],
+        "reproducibility_key": run["reproducibility_key"],
     }
 
 

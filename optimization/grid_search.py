@@ -93,9 +93,17 @@ def grid_search(df, strategy_name, param_ranges, metric: str = "夏普比率", *
 
     results = pd.DataFrame(rows)
     sign = direction(metric)
-    results = (results.assign(_score=results[metric] * sign)
-               .sort_values("_score", ascending=False, kind="stable")
-               .drop(columns="_score").reset_index(drop=True))
+    tie_columns = [column for column in results.columns if column != metric]
+    results = (
+        results.assign(_score=results[metric] * sign)
+        .sort_values(
+            ["_score", *tie_columns],
+            ascending=[False, *([True] * len(tie_columns))],
+            kind="stable",
+        )
+        .drop(columns="_score")
+        .reset_index(drop=True)
+    )
 
     # 注意：results.iloc[0] 取整行会把 int 参数列也转成 float，
     # 所以按列取值，再按参数范围里的原始类型转回 int/float

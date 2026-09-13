@@ -7,17 +7,29 @@
 import pandas as pd
 
 from strategies.base import Strategy
+from strategies.metadata import ParameterSpec
 
 
 class DoubleMAStrategy(Strategy):
     """双均线策略"""
 
+    strategy_key = "double_ma"
     name = "双均线策略"
-
-    PARAMS_HELP = {
-        "fast": "短期均线周期（天），默认 5",
-        "slow": "长期均线周期（天），默认 20，必须大于 fast",
-    }
+    version = "1.0.0"
+    description = "短期均线上穿长期均线买入，下穿卖出"
+    required_columns = ("close",)
+    tags = ("trend", "moving-average")
+    constraints = ("fast < slow",)
+    PARAMETER_SPECS = (
+        ParameterSpec(
+            "fast", 5, "短期均线周期（天），默认 5",
+            kind="int", minimum=1, step=1,
+        ),
+        ParameterSpec(
+            "slow", 20, "长期均线周期（天），默认 20，必须大于 fast",
+            kind="int", minimum=1, step=1,
+        ),
+    )
 
     def __init__(self, fast: int = 5, slow: int = 20):
         if not isinstance(fast, int) or fast < 1:
@@ -28,10 +40,6 @@ class DoubleMAStrategy(Strategy):
             raise ValueError(f"fast({fast}) 必须小于 slow({slow})")
         self.fast = fast
         self.slow = slow
-
-    @classmethod
-    def default_params(cls) -> dict:
-        return {"fast": 5, "slow": 20}
 
     def generate_signals(self, df: pd.DataFrame):
         """计算金叉/死叉信号

@@ -35,7 +35,11 @@ __all__ = ["optimize_parameters", "grid_search", "genetic_optimize",
 
 
 def optimize_parameters(df, strategy_name, param_ranges, metric: str = "夏普比率",
-                        method: str = "grid", **kwargs) -> dict:
+                        method: str = "grid", *,
+                        record_experiment: bool = True,
+                        experiment_name: str | None = None,
+                        experiment_store=None,
+                        **kwargs) -> dict:
     """统一参数优化入口
 
     参数:
@@ -44,6 +48,9 @@ def optimize_parameters(df, strategy_name, param_ranges, metric: str = "夏普�
         param_ranges:   参数范围字典，如 {"fast": range(5, 20), "slow": range(20, 60, 5)}
         metric:         优化目标指标（默认 夏普比率；最大回撤/年化波动率/总手续费 越小越好）
         method:         "grid" 网格搜索 / "genetic" 遗传算法
+        record_experiment: 是否自动保存完整实验记录，默认 True
+        experiment_name:   实验名称
+        experiment_store:  自定义 ExperimentStore
         **kwargs:       透传给具体方法，共用的有：
                             init_cash / commission / slippage / code / rf /
                             t_plus_1 / price_limit / stamp_tax / transfer_fee /
@@ -62,4 +69,36 @@ def optimize_parameters(df, strategy_name, param_ranges, metric: str = "夏普�
     else:
         raise ValueError(f"未知寻优方法：{method!r}，可选：'grid' / 'genetic'")
     out["method"] = method
+    if record_experiment:
+        from research.experiments import (
+            CostAssumptions,
+            record_optimization_experiment,
+        )
+
+        costs = CostAssumptions(
+            init_cash=kwargs.get("init_cash", 1_000_000),
+            commission=kwargs.get("commission", 0.00025),
+            slippage=kwargs.get("slippage", 0.001),
+            stamp_tax=kwargs.get("stamp_tax", True),
+            transfer_fee=kwargs.get("transfer_fee", True),
+            t_plus_1=kwargs.get("t_plus_1", True),
+            price_limit=kwargs.get("price_limit", True),
+            rf=kwargs.get("rf", 0.0),
+        )
+        record = record_optimization_experiment(
+            df,
+            strategy_name=strategy_name,
+            parameter_ranges=param_ranges,
+            metric=metric,
+            method=method,
+            output=out,
+            costs=costs,
+            code=kwargs.get("code"),
+            random_seed=kwargs.get("seed"),
+            name=experiment_name,
+            store=experiment_store,
+        )
+        out["experiment_id"] = record.experiment_id
+        out["reproducibility_key"] = record.reproducibility_key
+        out["result_hash"] = record.result_hash
     return out

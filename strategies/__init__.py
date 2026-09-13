@@ -19,9 +19,12 @@
 from strategies.base import Strategy
 from strategies.boll_strategy import BollStrategy
 from strategies.double_ma import DoubleMAStrategy
-from strategies.factory import create_strategy, get_available_strategies
+from strategies.factory import (create_strategy, get_available_strategies,
+                                get_strategy_metadata)
+from strategies.metadata import ParameterSpec, StrategyMetadata
 from strategies.momentum import MomentumStrategy
 from strategies.rsi_strategy import RSIStrategy
+from strategies.signals import SignalOutput
 from strategies.turtle_strategy import TurtleStrategy
 
 __all__ = [
@@ -33,4 +36,8 @@ __all__ = [
     "TurtleStrategy",
     "create_strategy",
     "get_available_strategies",
+    "get_strategy_metadata",
+    "ParameterSpec",
+    "StrategyMetadata",
+    "SignalOutput",
 ]

@@ -10,6 +10,7 @@
 import pandas as pd
 
 from strategies.base import Strategy
+from strategies.metadata import ParameterSpec
 
 
 def compute_bollinger(close: pd.Series, period: int = 20, k: float = 2.0):
@@ -30,13 +31,26 @@ def compute_bollinger(close: pd.Series, period: int = 20, k: float = 2.0):
 class BollStrategy(Strategy):
     """布林带突破策略"""
 
+    strategy_key = "boll"
     name = "布林带突破策略"
-
-    PARAMS_HELP = {
-        "period": "布林带周期（天），默认 20",
-        "k": "上下轨标准差倍数，默认 2.0",
-        "exit_mode": '卖出规则："mid" 跌破中轨卖出（默认）；"lower" 跌破下轨卖出',
-    }
+    version = "1.0.0"
+    description = "价格突破布林带上轨买入，跌破中轨或下轨卖出"
+    required_columns = ("close",)
+    tags = ("breakout", "volatility")
+    PARAMETER_SPECS = (
+        ParameterSpec(
+            "period", 20, "布林带周期（天），默认 20",
+            kind="int", minimum=2, step=1,
+        ),
+        ParameterSpec(
+            "k", 2.0, "上下轨标准差倍数，默认 2.0",
+            kind="float", minimum=0.0, exclusive_minimum=True, step=0.5,
+        ),
+        ParameterSpec(
+            "exit_mode", "mid", '卖出规则："mid" 或 "lower"',
+            kind="str", choices=("mid", "lower"), optimize=False,
+        ),
+    )
 
     def __init__(self, period: int = 20, k: float = 2.0, exit_mode: str = "mid"):
         if not isinstance(period, int) or period < 2:
@@ -48,10 +62,6 @@ class BollStrategy(Strategy):
         self.period = period
         self.k = float(k)
         self.exit_mode = exit_mode
-
-    @classmethod
-    def default_params(cls) -> dict:
-        return {"period": 20, "k": 2.0, "exit_mode": "mid"}
 
     def generate_signals(self, df: pd.DataFrame):
         """计算布林带突破信号

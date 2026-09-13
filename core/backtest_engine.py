@@ -188,10 +188,9 @@ class BacktestEngine:
             raise ValueError(
                 f"{name} 信号长度({len(sig)})与行情数据({len(self.df)})不一致"
             )
-        if not sig.index.equals(self.df.index):
-            # 索引不同（如 RangeIndex）时按位置对齐
-            sig = pd.Series(sig.to_numpy(), index=self.df.index)
-        return sig
+        # 始终按位置对齐到行情的精确索引，避免索引名称、频率等元数据
+        # 差异导致 vectorbt 在内部广播时拒绝执行。
+        return pd.Series(sig.to_numpy(), index=self.df.index)
 
     # ---- A股规则处理 ----
 

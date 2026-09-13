@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-import subprocess
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +20,7 @@ from data.models import (
 from data.providers import AkshareHistoryProvider
 from data.quality import clean_market_data, suspension_candidates, validate_market_data
 from data.snapshots import SnapshotStore
+from utils.versioning import get_code_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -316,32 +316,7 @@ def _attach_metadata(frame: pd.DataFrame,
 
 
 def _code_version() -> str:
-    configured = os.environ.get("ABACKTEST_CODE_VERSION")
-    if configured:
-        return configured
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short=12", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-        value = result.stdout.strip()
-        if result.returncode == 0 and value:
-            dirty = subprocess.run(
-                ["git", "status", "--porcelain", "--untracked-files=no"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=2,
-                check=False,
-            )
-            return f"{value}-dirty" if dirty.stdout.strip() else value
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "unknown"
+    return get_code_version(PROJECT_ROOT)
 
 
 _DEFAULT_SERVICE: MarketDataService | None = None

@@ -27,21 +27,33 @@ def _run_backtest(code, start, end, strategy_key, params, init_cash, commission,
                   slippage, rf, t_plus_1, price_limit, stamp_tax, transfer_fee,
                   freq="daily"):
     """后台任务：下载数据 + 回测 + 绩效分析（在子线程执行，重型库延迟导入）"""
-    from core.backtest_engine import BacktestEngine
     from core.risk_analysis import analyze_portfolio, trades_table
-    from strategies.factory import create_strategy
+    from research.experiments import CostAssumptions, run_backtest_experiment
     from utils.data_loader import load_market_data
 
     df = load_market_data(code, start, end, freq=freq)
-    strategy = create_strategy(strategy_key, **params)
-    entries, exits = strategy.generate_signals(df)
-    if entries.sum() == 0:
+    run = run_backtest_experiment(
+        df,
+        strategy_key,
+        params,
+        code=code,
+        symbol=code,
+        frequency=freq,
+        costs=CostAssumptions(
+            init_cash=init_cash,
+            commission=commission,
+            slippage=slippage,
+            stamp_tax=stamp_tax,
+            transfer_fee=transfer_fee,
+            t_plus_1=t_plus_1,
+            price_limit=price_limit,
+            rf=rf,
+        ),
+        name=f"{code} {strategy_key} 桌面回测",
+    )
+    if int(run["signal"].entries.sum()) == 0:
         raise ValueError("策略没有产生任何买入信号，请换参数或换股票")
-    engine = BacktestEngine(
-        df, entries, exits, init_cash=init_cash, commission=commission,
-        slippage=slippage, rf=rf, code=code, t_plus_1=t_plus_1,
-        price_limit=price_limit, stamp_tax=stamp_tax,
-        transfer_fee=transfer_fee).run()
+    engine = run["engine"]
     analyzer = analyze_portfolio(engine.portfolio, rf=rf)
     benchmark = df["close"] / df["close"].iloc[0] * init_cash
     return {
@@ -49,10 +61,12 @@ def _run_backtest(code, start, end, strategy_key, params, init_cash, commission,
         "equity": engine.portfolio.value(),
         "benchmark": benchmark,
         "drawdown": analyzer.drawdown_series(),
-        "metrics": engine.get_metrics(),
+        "metrics": run["metrics"]["engine"],
         "risk_metrics": analyzer.compute_metrics(),
         "trades": trades_table(engine.portfolio),
         "yearly": analyzer.yearly_returns(),
+        "experiment_id": run["experiment_id"],
+        "reproducibility_key": run["reproducibility_key"],
     }
 
 

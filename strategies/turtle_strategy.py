@@ -14,17 +14,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from strategies.base import Strategy
+from strategies.metadata import ParameterSpec
 
 
 class TurtleStrategy(Strategy):
     """海龟策略"""
 
+    strategy_key = "turtle"
     name = "海龟策略"
-
-    PARAMS_HELP = {
-        "entry_window": "入场通道周期（天）：突破过去 N 日最高价买入，默认 20",
-        "exit_window": "出场通道周期（天）：跌破过去 M 日最低价卖出，默认 10",
-    }
+    version = "1.0.0"
+    description = "突破唐奇安入场通道买入，跌破出场通道卖出"
+    required_columns = ("high", "low", "close")
+    tags = ("breakout", "trend")
+    PARAMETER_SPECS = (
+        ParameterSpec(
+            "entry_window", 20, "入场通道周期（天），默认 20",
+            kind="int", minimum=1, step=1,
+        ),
+        ParameterSpec(
+            "exit_window", 10, "出场通道周期（天），默认 10",
+            kind="int", minimum=1, step=1,
+        ),
+    )
 
     def __init__(self, entry_window: int = 20, exit_window: int = 10):
         if not isinstance(entry_window, int) or entry_window < 1:
@@ -33,10 +44,6 @@ class TurtleStrategy(Strategy):
             raise ValueError(f"exit_window 必须为正整数：{exit_window!r}")
         self.entry_window = entry_window
         self.exit_window = exit_window
-
-    @classmethod
-    def default_params(cls) -> dict:
-        return {"entry_window": 20, "exit_window": 10}
 
     def generate_signals(self, df: pd.DataFrame):
         """计算唐奇安通道突破信号

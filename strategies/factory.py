@@ -22,12 +22,14 @@ from strategies.base import Strategy
 from strategies.boll_strategy import BollStrategy, compute_bollinger
 from strategies.double_ma import DoubleMAStrategy
 from strategies.momentum import MomentumStrategy
+from strategies.metadata import StrategyMetadata
 from strategies.rsi_strategy import RSIStrategy, compute_rsi
 from strategies.turtle_strategy import TurtleStrategy
 
 # 可用策略列表（顺序即界面展示顺序）
 _ALL_STRATEGIES = [DoubleMAStrategy, RSIStrategy, BollStrategy,
                    MomentumStrategy, TurtleStrategy]
+_BY_KEY = {strategy.strategy_key: strategy for strategy in _ALL_STRATEGIES}
 
 # 策略别名表：策略名（中英文均可） -> 策略类
 _ALIASES = {
@@ -78,11 +80,20 @@ def create_strategy(name: str, **params) -> Strategy:
         策略实例（Strategy 子类），可直接调用 generate_signals(df)
     """
     key = str(name).strip().lower()
-    cls = _ALIASES.get(key)
+    cls = _ALIASES.get(key) or _BY_KEY.get(key)
     if cls is None:
         available = "、".join(f"{s.name}（{s.__name__}）" for s in _ALL_STRATEGIES)
         raise ValueError(f"未知策略：{name!r}。可用策略：{available}")
-    return cls(**params)
+    return cls(**cls.validate_params(params))
+
+
+def get_strategy_metadata(name: str) -> StrategyMetadata:
+    """按策略名或稳定 key 获取元数据。"""
+    key = str(name).strip().lower()
+    cls = _ALIASES.get(key) or _BY_KEY.get(key)
+    if cls is None:
+        raise ValueError(f"未知策略：{name!r}")
+    return cls.metadata()
 
 
 def get_available_strategies() -> list:
@@ -97,9 +108,16 @@ def get_available_strategies() -> list:
     return [
         {
             "key": s.__name__,
+            "strategy_key": s.strategy_key,
             "name": s.name,
+            "version": s.version,
+            "description": s.description,
             "default_params": s.default_params(),
             "params_help": s.PARAMS_HELP,
+            "parameter_schema": s.metadata().parameter_schema,
+            "metadata_hash": s.metadata().metadata_hash,
+            "implementation_hash": s.metadata().implementation_hash,
+            "signal_schema_version": s.signal_schema_version,
         }
         for s in _ALL_STRATEGIES
     ]
@@ -188,7 +206,11 @@ def run_test():
     assert isinstance(create_strategy("turtle", entry_window=30), TurtleStrategy)
     info = get_available_strategies()
     assert len(info) == 5
-    assert all({"key", "name", "default_params", "params_help"} <= set(item) for item in info)
+    assert all({
+        "key", "strategy_key", "name", "version", "default_params",
+        "params_help", "parameter_schema", "metadata_hash",
+        "implementation_hash", "signal_schema_version",
+    } <= set(item) for item in info)
     # key（类名）也必须能直接回传给工厂（桌面界面按 key 传参）
     expected = [DoubleMAStrategy, RSIStrategy, BollStrategy, MomentumStrategy, TurtleStrategy]
     for item, cls in zip(info, expected):
