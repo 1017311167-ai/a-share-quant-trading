@@ -26,6 +26,7 @@
 
 import os
 import sys
+import tempfile
 
 # 保证直接运行本文件（python core/backtest_engine.py）时能找到 utils 等包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -33,6 +34,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+
+# 受限运行环境中 site-packages 和用户缓存目录可能不可写。Numba 必须能定位
+# 可写的缓存目录，否则 vectorbt 在导入阶段就会失败。
+os.environ.setdefault(
+    "NUMBA_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "abacktest_numba_cache"),
+)
 
 try:
     import vectorbt as vbt
