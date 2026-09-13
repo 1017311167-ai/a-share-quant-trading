@@ -6,6 +6,7 @@ from research.experiments import (  # noqa: F401
     ExperimentStore,
     record_batch_experiment,
     record_optimization_experiment,
+    record_portfolio_experiment,
     reproduce_experiment,
     run_backtest_experiment,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "ExperimentStore",
     "record_batch_experiment",
     "record_optimization_experiment",
+    "record_portfolio_experiment",
     "reproduce_experiment",
     "run_backtest_experiment",
 ]

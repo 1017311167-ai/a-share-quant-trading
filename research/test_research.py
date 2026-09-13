@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from optimization import optimize_parameters
 from core.optimizer import optimize as legacy_optimize
 from core.batch_backtest import run_batch
+from core.portfolio_backtest import PortfolioBacktestEngine, PortfolioConstraints
 from strategies.double_ma import DoubleMAStrategy
 from research.experiments import (
     ExperimentStore,
@@ -209,6 +210,58 @@ def test_batch_experiment_is_recorded_and_reproducible():
     print("PASS batch experiment")
 
 
+def test_portfolio_experiment_is_recorded_and_reproducible():
+    index = pd.date_range("2024-01-01", periods=90, freq="D")
+    data = {}
+    signals = {}
+    for offset, symbol in enumerate(("AAA", "BBB", "CCC")):
+        close = pd.Series(
+            10 + offset + np.linspace(0, 2 + offset, len(index)),
+            index=index,
+        )
+        frame = pd.DataFrame({
+            "open": close,
+            "high": close + 0.1,
+            "low": close - 0.1,
+            "close": close,
+            "volume": 1_000_000,
+        }, index=index)
+        frame.attrs["data_version"] = f"test-{symbol}"
+        data[symbol] = frame
+        entries = pd.Series(False, index=index)
+        exits = pd.Series(False, index=index)
+        entries.iloc[1 + offset] = True
+        signals[symbol] = (entries, exits)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ExperimentStore(tmp)
+        engine = PortfolioBacktestEngine.from_signals(
+            data,
+            signals,
+            rebalance_frequency="D",
+            constraints=PortfolioConstraints(
+                max_weight=0.4,
+                min_cash_weight=0.1,
+            ),
+            slippage=0,
+            impact_coefficient=0,
+            participation_rate=1.0,
+            t_plus_1=False,
+            price_limit=False,
+        ).run(experiment_store=store)
+        assert engine.experiment_id
+        record = store.load(engine.experiment_id)
+        assert record.kind == "portfolio_backtest"
+        assert store.artifact_path(record, "target_weights").exists()
+        reproduced = reproduce_experiment(
+            engine.experiment_id,
+            store=store,
+            data_loader=lambda context: data,
+        )
+        assert reproduced["matches"], reproduced["differences"]
+    print("PASS portfolio experiment")
+
+
 def run_test():
     for test in (
         test_strategy_metadata_and_parameter_validation,
@@ -217,6 +270,7 @@ def run_test():
         test_optimization_experiment_is_recorded_and_reproducible,
         test_legacy_optimizer_is_reproducible,
         test_batch_experiment_is_recorded_and_reproducible,
+        test_portfolio_experiment_is_recorded_and_reproducible,
     ):
         test()
     print("===== research tests passed =====")

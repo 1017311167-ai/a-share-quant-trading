@@ -238,7 +238,7 @@ class RealisticExecutionSimulator:
                     else:
                         cash += fill_gross - fees["total"]
                         position -= qty
-                        _consume_lots(lots, qty)
+                        consume_lots(lots, qty)
                         if open_trade is None:
                             open_trade = _new_trade()
                         _add_exit(open_trade, self.df.index[i], qty, price, fees["total"])
@@ -369,7 +369,7 @@ class RealisticExecutionSimulator:
 
         side = pending["side"]
         if side == "sell":
-            available = _available_quantity(lots, i, self.config.t_plus_1)
+            available = available_quantity(lots, i, self.config.t_plus_1)
             if available <= 0:
                 pending["reason"] = "T_PLUS_1_LOCKED"
                 return None
@@ -392,7 +392,7 @@ class RealisticExecutionSimulator:
                     pending["reason"] = "LIMIT_DOWN_QUEUE"
                     return None
 
-        max_capacity = _participation_capacity(
+        max_capacity = participation_capacity(
             bar_volume, self.config.participation_rate, self.config.lot_size
         )
         max_capacity = max(0, int(max_capacity * queue_ratio))
@@ -414,9 +414,9 @@ class RealisticExecutionSimulator:
             qty = min(requested, max_capacity)
             target_qty = requested
         if self.config.lot_size and side == "buy":
-            qty = _round_lot_down(qty, self.config.lot_size)
+            qty = round_lot_down(qty, self.config.lot_size)
         elif self.config.lot_size and side == "sell" and qty < requested:
-            qty = _round_lot_down(qty, self.config.lot_size)
+            qty = round_lot_down(qty, self.config.lot_size)
         if qty <= 0:
             pending["reason"] = "LIQUIDITY_OR_CASH_LIMIT"
             return None
@@ -437,7 +437,7 @@ class RealisticExecutionSimulator:
             return None
 
         gross = qty * price
-        fees = _calculate_fees(
+        fees = calculate_fees(
             side,
             gross,
             self.config,
@@ -454,7 +454,7 @@ class RealisticExecutionSimulator:
                     pending["reason"] = "INSUFFICIENT_CASH_AFTER_FEES"
                     return None
                 gross = qty * price
-                fees = _calculate_fees(
+                fees = calculate_fees(
                     side,
                     gross,
                     self.config,
@@ -474,14 +474,14 @@ class RealisticExecutionSimulator:
         return False
 
 
-def _participation_capacity(volume, participation_rate, lot_size) -> int:
+def participation_capacity(volume, participation_rate, lot_size) -> int:
     raw = max(0, int(volume * participation_rate))
     if lot_size:
-        raw = _round_lot_down(raw, lot_size)
+        raw = round_lot_down(raw, lot_size)
     return raw
 
 
-def _round_lot_down(value, lot_size) -> int:
+def round_lot_down(value, lot_size) -> int:
     if not lot_size:
         return max(0, int(value))
     return max(0, int(value) // int(lot_size) * int(lot_size))
@@ -497,12 +497,12 @@ def _affordable_buy_quantity(cash, price, config, *, remaining=None,
     )
     qty = int(cash / (price * (1 + estimate_rate)))
     if config.lot_size:
-        qty = _round_lot_down(qty, config.lot_size)
+        qty = round_lot_down(qty, config.lot_size)
     if remaining is not None:
         qty = min(qty, int(remaining))
     while qty > 0:
         gross = qty * price
-        fees = _calculate_fees(
+        fees = calculate_fees(
             "buy",
             gross,
             config,
@@ -518,8 +518,8 @@ def _affordable_buy_quantity(cash, price, config, *, remaining=None,
     return 0
 
 
-def _calculate_fees(side, gross, config, *, previous_gross=0.0,
-                    commission_charged=0.0) -> dict:
+def calculate_fees(side, gross, config, *, previous_gross=0.0,
+                   commission_charged=0.0) -> dict:
     commission = 0.0
     if config.commission > 0 or config.commission_min > 0:
         cumulative_gross = previous_gross + gross
@@ -541,13 +541,13 @@ def _calculate_fees(side, gross, config, *, previous_gross=0.0,
     }
 
 
-def _available_quantity(lots, current_idx, t_plus_1) -> int:
+def available_quantity(lots, current_idx, t_plus_1) -> int:
     if not t_plus_1:
         return sum(item["qty"] for item in lots)
     return sum(item["qty"] for item in lots if item["buy_idx"] < current_idx)
 
 
-def _consume_lots(lots, quantity):
+def consume_lots(lots, quantity):
     remaining = int(quantity)
     while remaining > 0 and lots:
         head = lots[0]

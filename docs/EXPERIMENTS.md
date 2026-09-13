@@ -123,6 +123,9 @@ result = run_backtest_experiment(
 旧入口 `core.optimizer.optimize()` 和批量回测 `core.batch_backtest.run_batch()`
 也会记录，确保网页版和桌面版研究流程不会漏记。
 
+组合回测 `PortfolioBacktestEngine.run()` 默认记录目标权重、实际权重、持仓、
+约束、再平衡配置、成交成本和组合指标。
+
 ## 10. 重放实验
 
 ```python

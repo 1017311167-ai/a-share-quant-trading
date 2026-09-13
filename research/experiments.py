@@ -117,10 +117,10 @@ class ExperimentStore:
         self.root = Path(root or DEFAULT_EXPERIMENT_DIR)
 
     def write(self, record: ExperimentRecord, *, results=None,
-              signals=None) -> ExperimentRecord:
+              signals=None, extra_artifacts=None) -> ExperimentRecord:
         run_dir = self.root / record.created_at[:10] / record.experiment_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        artifacts = {
+        artifact_map = {
             "manifest": "manifest.json",
         }
         if results is not None:
@@ -129,15 +129,24 @@ class ExperimentStore:
                 path,
                 results.to_csv(index=False, lineterminator="\n"),
             )
-            artifacts["results"] = path.name
+            artifact_map["results"] = path.name
         if signals is not None:
             path = run_dir / "signals.csv"
             _atomic_text(
                 path,
                 signals.to_csv(index=False, lineterminator="\n"),
             )
-            artifacts["signals"] = path.name
-        record.artifacts = artifacts
+            artifact_map["signals"] = path.name
+        for name, frame in (extra_artifacts or {}).items():
+            if frame is None:
+                continue
+            path = run_dir / f"{name}.csv"
+            _atomic_text(
+                path,
+                frame.to_csv(index=True, lineterminator="\n"),
+            )
+            artifact_map[name] = path.name
+        record.artifacts = artifact_map
         _atomic_text(
             run_dir / "manifest.json",
             json.dumps(record.to_dict(), ensure_ascii=False, indent=2),
@@ -422,6 +431,124 @@ def record_batch_experiment(
     return record_obj
 
 
+def record_portfolio_experiment(
+        data: dict,
+        target_weights: pd.DataFrame,
+        result,
+        *,
+        execution_config,
+        constraints,
+        rebalance_frequency,
+        rebalance_threshold: float,
+        rf: float = 0.0,
+        name: str | None = None,
+        store: ExperimentStore | None = None,
+) -> ExperimentRecord:
+    """记录多标的组合回测实验。"""
+    contexts = {
+        symbol: _data_context(
+            frame,
+            symbol=symbol,
+            start=frame.index.min() if len(frame) else None,
+            end=frame.index.max() if len(frame) else None,
+            frequency=_frame_frequency(frame),
+            adjust=frame.attrs.get("adjust"),
+        )
+        for symbol, frame in data.items()
+    }
+    result_frame = result.equity.to_frame("equity")
+    result_hash = _frame_hash(result_frame)
+    target_hash = _frame_hash(target_weights)
+    constraints_dict = asdict(constraints)
+    config_dict = execution_config.to_dict()
+    reproducibility_key = stable_hash({
+        "kind": "portfolio_backtest",
+        "code_version": get_code_version(),
+        "data": {
+            symbol: _identity_data_context(context)
+            for symbol, context in sorted(contexts.items())
+        },
+        "target_weights_hash": target_hash,
+        "constraints": constraints_dict,
+        "rebalance_frequency": str(rebalance_frequency),
+        "rebalance_threshold": float(rebalance_threshold),
+        "execution_config": config_dict,
+        "rf": float(rf),
+    })
+    experiment_id = _experiment_id("portfolio", reproducibility_key)
+    record_obj = ExperimentRecord(
+        experiment_id=experiment_id,
+        name=name or "多标的组合回测",
+        kind="portfolio_backtest",
+        status="completed",
+        created_at=datetime.now().isoformat(timespec="seconds"),
+        code_version=get_code_version(),
+        environment=get_environment_info(),
+        data={
+            "datasets": contexts,
+            "symbols": list(data),
+            "target_weights_hash": target_hash,
+        },
+        strategy={
+            "type": "target_weights",
+            "constraints": constraints_dict,
+        },
+        parameters={
+            "rebalance_frequency": str(rebalance_frequency),
+            "rebalance_threshold": float(rebalance_threshold),
+        },
+        parameter_ranges=None,
+        cost_assumptions=CostAssumptions(
+            init_cash=execution_config.init_cash,
+            commission=execution_config.commission,
+            commission_min=execution_config.commission_min,
+            slippage=execution_config.slippage,
+            impact_coefficient=execution_config.impact_coefficient,
+            max_slippage=execution_config.max_slippage,
+            participation_rate=execution_config.participation_rate,
+            lot_size=execution_config.lot_size,
+            stamp_tax=execution_config.stamp_tax,
+            transfer_fee=execution_config.transfer_fee,
+            t_plus_1=execution_config.t_plus_1,
+            price_limit=execution_config.price_limit,
+            limit_queue_fill_ratio=execution_config.limit_queue_fill_ratio,
+            order_ttl_bars=execution_config.order_ttl_bars,
+            execution_model="realistic",
+            rf=rf,
+        ).to_dict(),
+        engine_config=config_dict,
+        random_seed=None,
+        signal={
+            "type": "target_weights",
+            "rows": len(target_weights),
+            "columns": list(target_weights.columns),
+        },
+        result={
+            "metrics": result.metrics,
+            "result_hash": result_hash,
+        },
+        reproducibility_key=reproducibility_key,
+        result_hash=result_hash,
+        warnings=[
+            f"{symbol} 数据质量 {context['quality'].get('status')}"
+            for symbol, context in contexts.items()
+            if context.get("quality", {}).get("status") not in (None, "PASS")
+        ],
+    )
+    ExperimentStore(
+        store.root if isinstance(store, ExperimentStore) else store
+    ).write(
+        record_obj,
+        results=result.pnl_contribution,
+        extra_artifacts={
+            "target_weights": target_weights,
+            "actual_weights": result.weights,
+            "positions": result.position_values,
+        },
+    )
+    return record_obj
+
+
 def reproduce_experiment(experiment_id: str, *, store=None,
                          data_loader=None) -> dict:
     """重放一个实验并比较输入指纹和结果哈希。"""
@@ -585,6 +712,65 @@ def reproduce_experiment(experiment_id: str, *, store=None,
             "result_hash": _frame_hash(actual_output["results"]),
             "output": actual_output,
         }
+    elif record.kind == "portfolio_backtest":
+        from core.portfolio_backtest import (
+            PortfolioBacktestEngine,
+            PortfolioConstraints,
+        )
+
+        dfs = _load_batch_experiment_data(record, data_loader=data_loader)
+        target_path = experiment_store.artifact_path(
+            record, "target_weights"
+        )
+        target_weights = pd.read_csv(
+            target_path, index_col=0, parse_dates=True
+        )
+        constraints = PortfolioConstraints(
+            **record.strategy["constraints"]
+        )
+        actual_output = PortfolioBacktestEngine(
+            dfs,
+            target_weights,
+            rebalance_frequency=record.parameters["rebalance_frequency"],
+            rebalance_threshold=record.parameters["rebalance_threshold"],
+            constraints=constraints,
+            **_portfolio_engine_kwargs(costs),
+        ).run(record_experiment=False)
+        contexts = {
+            symbol: _data_context(
+                frame,
+                symbol=symbol,
+                start=frame.index.min(),
+                end=frame.index.max(),
+                frequency=_frame_frequency(frame),
+                adjust=frame.attrs.get("adjust"),
+            )
+            for symbol, frame in dfs.items()
+        }
+        actual = {
+            "reproducibility_key": stable_hash({
+                "kind": "portfolio_backtest",
+                "code_version": get_code_version(),
+                "data": {
+                    symbol: _identity_data_context(context)
+                    for symbol, context in sorted(contexts.items())
+                },
+                "target_weights_hash": _frame_hash(target_weights),
+                "constraints": asdict(constraints),
+                "rebalance_frequency": record.parameters[
+                    "rebalance_frequency"
+                ],
+                "rebalance_threshold": record.parameters[
+                    "rebalance_threshold"
+                ],
+                "execution_config": actual_output.execution_config.to_dict(),
+                "rf": costs.rf,
+            }),
+            "result_hash": _frame_hash(
+                actual_output.result.equity.to_frame("equity")
+            ),
+            "output": actual_output,
+        }
     else:
         raise ValueError(f"不支持的实验类型：{record.kind!r}")
 
@@ -663,6 +849,38 @@ def _batch_strategy_contexts(strategy_configs: list[dict]) -> list[dict]:
             "parameters": strategy.params(),
         })
     return contexts
+
+
+def _portfolio_engine_kwargs(costs: CostAssumptions) -> dict:
+    return {
+        "init_cash": costs.init_cash,
+        "commission": costs.commission,
+        "commission_min": costs.commission_min,
+        "slippage": costs.slippage,
+        "impact_coefficient": costs.impact_coefficient,
+        "max_slippage": costs.max_slippage,
+        "participation_rate": costs.participation_rate,
+        "lot_size": costs.lot_size,
+        "t_plus_1": costs.t_plus_1,
+        "price_limit": costs.price_limit,
+        "stamp_tax": costs.stamp_tax,
+        "transfer_fee": costs.transfer_fee,
+        "limit_queue_fill_ratio": costs.limit_queue_fill_ratio,
+        "order_ttl_bars": costs.order_ttl_bars,
+        "rf": costs.rf,
+    }
+
+
+def _frame_frequency(frame: pd.DataFrame) -> str:
+    if frame is None or len(frame.index) < 2:
+        return "daily"
+    index = pd.DatetimeIndex(frame.index)
+    median_seconds = float(
+        (index[1:] - index[:-1]).median().total_seconds()
+    )
+    if median_seconds < 86400:
+        return f"{max(1, int(round(median_seconds / 60)))}min"
+    return "daily"
 
 
 def _data_context(df: pd.DataFrame, *, symbol, start, end, frequency, adjust) -> dict:
