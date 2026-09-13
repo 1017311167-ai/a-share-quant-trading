@@ -7,6 +7,7 @@
 - 项目目标与边界：[docs/PROJECT_CHARTER.md](docs/PROJECT_CHARTER.md)
 - 三阶段准入标准：[docs/TRADING_STAGES.md](docs/TRADING_STAGES.md)
 - 目标系统架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- 行情数据管线：[docs/DATA_PIPELINE.md](docs/DATA_PIPELINE.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -37,8 +38,15 @@
 ├── app/                   # 界面层（Streamlit 网页界面）
 │   ├── streamlit_app.py   # 交互界面：回测参数设置 + 图表指标 + CSV 导出
 │   └── app.py             # 旧入口（兼容，转发到 streamlit_app.py）
-├── data/                  # 数据层（本地缓存 data/cache/ + 兼容转发入口）
-│   └── loader.py          # 转发到 utils/data_loader.py（from data.loader import ... 仍可用）
+├── data/                  # 统一行情数据层
+│   ├── service.py         # 日线/分钟线/实时行情统一服务
+│   ├── models.py          # 请求、质量报告、快照和实时行情对象
+│   ├── trading_calendar.py# A股交易日历与交易时段
+│   ├── quality.py         # 清洗、异常值、缺失数据和停牌候选检查
+│   ├── snapshots.py       # 不可变快照和版本清单
+│   ├── providers.py       # AKShare 数据源适配
+│   ├── loader.py          # 数据层公共入口
+│   └── test_data_layer.py # 不联网的数据层回归测试
 ├── core/                  # 回测核心
 │   ├── backtest_engine.py # vectorbt 回测引擎（含 T+1/涨跌停/印花税过户费规则）
 │   ├── optimizer.py       # 参数寻优（网格搜索 + 参数热力图）
@@ -129,6 +137,8 @@ pyinstaller --onefile --windowed --name A股量化回测 ^
 - **消息推送**：exe 同目录放一个 `.env`（内容同 `.env.example`）即可使用推送功能
 - **行情缓存**：打包后默认缓存在临时解压目录（每次运行会丢），可设置环境变量
   `ABACKTEST_CACHE_DIR` 指向固定目录（如 `D:\abacktest_cache`）保存缓存
+- **数据快照**：可通过 `ABACKTEST_SNAPSHOT_DIR` 指定不可变快照目录，通过
+  `ABACKTEST_CALENDAR_DIR` 指定交易日历缓存目录
 
 ## 如何运行测试
 
@@ -136,8 +146,9 @@ pyinstaller --onefile --windowed --name A股量化回测 ^
 
 ```bash
 python3 gui/main_window.py --test     # 桌面版冒烟测试（页面/图表/表格/线程/推送链路，不联网）
+python3 data/test_data_layer.py       # 数据层测试（交易日历/质量/快照/实时行情，不联网）
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
-python3 utils/data_loader.py          # 数据层测试（日线 + 分钟线 + 缓存）
+python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
 python3 strategies/factory.py         # 策略工厂测试（其余模块同理，都带 run_test）
 ```
