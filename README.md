@@ -40,12 +40,13 @@
 │   ├── e2e_test.py        # 端到端联调测试：下载分钟数据→参数优化→一键回测→批量回测→推送
 │   └── pages/             # 每个标签页一个文件：单股回测/参数寻优/批量回测/数据下载/设置
 ├── app/                   # 界面层（Streamlit 网页界面）
+│   ├── research_console.py # 数据/回测/组合/稳健性/实验综合控制台
 │   ├── streamlit_app.py   # 交互界面：回测参数设置 + 图表指标 + CSV 导出
 │   └── app.py             # 旧入口（兼容，转发到 streamlit_app.py）
 ├── data/                  # 统一行情数据层
 │   ├── service.py         # 日线/分钟线/实时行情统一服务
 │   ├── models.py          # 请求、质量报告、快照和实时行情对象
-│   ├── trading_calendar.py# A股交易日历与交易时段
+│   ├── trading_calendar.py # A股交易日历与交易时段
 │   ├── quality.py         # 清洗、异常值、缺失数据和停牌候选检查
 │   ├── snapshots.py       # 不可变快照和版本清单
 │   ├── providers.py       # AKShare 数据源适配
@@ -96,10 +97,16 @@ pip install -r requirements.txt
 
 ### 2. 启动软件
 
-网页版（浏览器界面）：
+研究控制台（推荐）：
 
 ```bash
 python main.py
+```
+
+经典回测页面：
+
+```bash
+python main.py --legacy
 ```
 
 桌面版（PyQt6 窗口界面，无需浏览器）：
