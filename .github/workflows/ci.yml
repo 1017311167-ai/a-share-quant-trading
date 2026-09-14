@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements-ci.txt
+      - name: Compile
+        run: python -m compileall -q .
+      - name: Unit tests
+        run: |
+          python ops/test_ops.py
+          python persistence/test_persistence.py
+          python execution/test_execution.py
+          python risk/test_risk.py
+          python broker_adapter/test_contract.py
+          python broker_adapter/test_broker.py
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-ci.txt
+      - name: Integration tests
+        run: |
+          python trading/test_paper_runtime.py
+          python app/test_console.py
+      - name: Mock paper runner smoke
+        run: |
+          tmpdir=$(mktemp -d)
+          printf '%s\n' '{"symbol":"600519","action":"buy","quantity":100,"limit_price":10.0,"strategy_instance_id":"ci","idempotency_key":"ci-001","signal_time":"2026-09-14T10:00:00"}' > "$tmpdir/signals.jsonl"
+          python -m trading.runner \
+            --broker mock \
+            --mock-fill-mode full \
+            --database "$tmpdir/paper.db" \
+            --signal-file "$tmpdir/signals.jsonl" \
+            --bootstrap \
+            --operator ci \
+            --mock-clock 2026-09-14T10:00:00 \
+            --mock-quote 600519=10.00 \
+            --max-cycles 1 \
+            --poll-interval 0.01 \
+            --reconcile-interval 0.01

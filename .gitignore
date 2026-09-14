@@ -23,8 +23,10 @@ data/processed/
 # 运行产物
 output/
 logs/
+backups/
 tmp/
 experiments/
+*.log
 *.sqlite
 *.sqlite3
 *.db
@@ -44,3 +46,5 @@ dist/
 .env
 .env.*
 !.env.example
+configs/**/*.env
+!configs/**/*.env.example

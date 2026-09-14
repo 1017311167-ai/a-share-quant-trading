@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import threading
 import time
 import uuid
@@ -15,6 +16,8 @@ from broker_adapter.models import normalize_symbol
 from execution.models import ExecutionResult, OrderIntent
 from persistence.reconciliation import ReconciliationService
 from persistence.recovery import RecoveryService
+from ops.logging_setup import log_event
+from ops.metrics import METRICS
 from risk.engine import execute_kill_switch, risk_context_from_broker
 from risk.models import QuoteState
 from trading.models import SignalAction, TradingSignal
@@ -40,6 +43,8 @@ class PaperTradingRuntime:
             reconcile_interval: float = 300.0,
             clock=None,
             sleeper=None,
+            metrics=None,
+            alert_manager=None,
     ):
         if not account_id:
             raise ValueError("模拟盘运行必须提供 account_id")
@@ -60,6 +65,9 @@ class PaperTradingRuntime:
         )
         self.clock = clock or dt.datetime.now
         self.sleeper = sleeper or time.sleep
+        self.metrics = metrics or METRICS
+        self.alert_manager = alert_manager
+        self.logger = logging.getLogger("trading.runtime")
         self.quotes: dict[str, QuoteState] = {}
         self.state = "created"
         self.recovery_case_id = None
@@ -71,6 +79,11 @@ class PaperTradingRuntime:
         self.execution_manager.require_risk = True
         self.execution_manager.risk_engine = self.risk_engine
         self.execution_manager.risk_context_provider = self.risk_context
+        self.metrics.gauge(
+            "trading_runtime_online",
+            1,
+            account_id=self.account_id,
+        )
 
     def start_recovery(self, reason: str = "paper_runtime_startup") -> dict:
         safety = assert_paper_trading(self.broker)
@@ -86,6 +99,24 @@ class PaperTradingRuntime:
             payload={"reason": reason, "safety": safety, "case": case},
         )
         self._heartbeat()
+        log_event(
+            self.logger,
+            "recovery_started",
+            "模拟盘恢复检查完成",
+            account_id=self.account_id,
+            state=self.state,
+            case_id=self.recovery_case_id,
+        )
+        if self.state != "ready_for_confirmation":
+            self._alert(
+                "recovery_blocked",
+                "模拟盘恢复检查未通过，交易保持冻结",
+                level="critical",
+                context={
+                    "state": self.state,
+                    "case_id": self.recovery_case_id,
+                },
+            )
         return case
 
     def confirm_recovery(
@@ -103,6 +134,14 @@ class PaperTradingRuntime:
         )
         self.state = case["status"]
         self._heartbeat()
+        log_event(
+            self.logger,
+            "recovery_confirmed",
+            "人工确认恢复完成",
+            account_id=self.account_id,
+            state=self.state,
+            case_id=self.recovery_case_id,
+        )
         return case
 
     def bootstrap_account(
@@ -173,6 +212,11 @@ class PaperTradingRuntime:
                 message=f"信号已处理，状态为 {saved['status']}",
             )
         if signal.action is SignalAction.NOOP:
+            self.metrics.counter(
+                "trading_signals_total",
+                action="noop",
+                result="noop",
+            )
             self.repository.update_signal_status(
                 saved["signal_id"], "noop", {"handled": True}
             )
@@ -215,6 +259,20 @@ class PaperTradingRuntime:
                 },
             )
             self.execution_bridge.sync_manager(self.execution_manager)
+            self.metrics.counter(
+                "trading_signals_total",
+                action=signal.action.value,
+                result="rejected",
+            )
+            log_event(
+                self.logger,
+                "signal_rejected",
+                "信号未通过风控",
+                level=logging.WARNING,
+                account_id=self.account_id,
+                symbol=signal.symbol,
+                rules=list(result.risk_decision.rule_codes),
+            )
             return result
         self.repository.update_signal_status(
             saved["signal_id"],
@@ -228,6 +286,28 @@ class PaperTradingRuntime:
             },
         )
         self.execution_bridge.sync_manager(self.execution_manager)
+        self.metrics.counter(
+            "trading_signals_total",
+            action=signal.action.value,
+            result="converted",
+        )
+        if result.order is not None:
+            self.metrics.counter(
+                "trading_orders_total",
+                side=result.order.side.value,
+                status=result.order.status.value,
+            )
+        log_event(
+            self.logger,
+            "signal_executed",
+            "策略信号已进入执行链",
+            account_id=self.account_id,
+            symbol=signal.symbol,
+            action=signal.action.value,
+            local_order_id=(
+                result.order.local_order_id if result.order else None
+            ),
+        )
         self.repository.append_audit_event(
             audit_event_id=str(uuid.uuid4()),
             account_id=self.account_id,
@@ -261,6 +341,10 @@ class PaperTradingRuntime:
 
     def process_once(self) -> dict:
         self.cycle_count += 1
+        self.metrics.counter(
+            "trading_runtime_cycles_total",
+            account_id=self.account_id,
+        )
         assert_paper_trading(self.broker)
         commands = self._process_runtime_commands()
         if self.state != "confirmed":
@@ -293,6 +377,20 @@ class PaperTradingRuntime:
                     "持续运行对账发现差异，等待人工处理"
                 )
                 self.state = "blocked"
+                self._alert(
+                    "reconciliation_mismatch",
+                    "持续运行对账发现差异，已停止开仓",
+                    level="critical",
+                    context={
+                        "run_id": reconciliation.run_id,
+                        "difference_count": reconciliation.difference_count,
+                    },
+                )
+            self.metrics.gauge(
+                "trading_reconciliation_differences",
+                reconciliation.difference_count,
+                account_id=self.account_id,
+            )
         self._heartbeat()
         return {
             "cycle": self.cycle_count,
@@ -310,6 +408,17 @@ class PaperTradingRuntime:
         )
         self.state = "blocked"
         self.last_error = message
+        self.metrics.gauge(
+            "trading_runtime_online",
+            0,
+            account_id=self.account_id,
+        )
+        self._alert(
+            "broker_disconnected",
+            "QMT 模拟账户连接断开，交易已冻结",
+            level="critical",
+            context={"message": message},
+        )
         self.repository.append_audit_event(
             audit_event_id=str(uuid.uuid4()),
             account_id=self.account_id,
@@ -402,6 +511,20 @@ class PaperTradingRuntime:
                     completed_at=self.clock(),
                 )
             results.append(completed)
+            self.metrics.counter(
+                "trading_command_total",
+                command=command["command_type"],
+                status=completed["status"],
+            )
+            log_event(
+                self.logger,
+                "runtime_command",
+                "运行命令已处理",
+                account_id=self.account_id,
+                command=command["command_type"],
+                command_status=completed["status"],
+                requested_by=command["requested_by"],
+            )
         return results
 
     def _execute_runtime_command(self, command):
@@ -423,6 +546,12 @@ class PaperTradingRuntime:
             )
             self.execution_bridge.sync_manager(self.execution_manager)
             self.state = "blocked"
+            self._alert(
+                "kill_switch",
+                "全局急停已执行并发出全部撤单",
+                level="critical",
+                context={"cancelled_order_count": cancelled},
+            )
             return {
                 "risk_state": self.risk_engine.state.value,
                 "cancelled_order_count": cancelled,
@@ -455,6 +584,36 @@ class PaperTradingRuntime:
                 "risk_state": self.risk_engine.state.value,
             },
         )
+        self.metrics.gauge(
+            "trading_runtime_online",
+            1,
+            account_id=self.account_id,
+        )
+        self.metrics.gauge(
+            "trading_risk_state",
+            _risk_state_number(self.risk_engine.state.value),
+            account_id=self.account_id,
+        )
+
+    def _alert(self, rule, message, *, level, context):
+        if self.alert_manager is None:
+            return
+        try:
+            self.alert_manager.send(
+                rule,
+                message,
+                level=level,
+                context={"account_id": self.account_id, **context},
+            )
+        except Exception as exc:
+            log_event(
+                self.logger,
+                "alert_failed",
+                "告警发送失败，交易流程继续",
+                level=logging.ERROR,
+                rule=rule,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
 
 def _quote_from_tick(symbol, tick, now):
@@ -514,3 +673,12 @@ def _quote_time(values, fallback):
         return dt.datetime.fromtimestamp(float(value))
     except (TypeError, ValueError, OSError):
         return fallback
+
+
+def _risk_state_number(state):
+    return {
+        "active": 0,
+        "stop_open": 1,
+        "reduce_only": 2,
+        "killed": 3,
+    }.get(str(state), -1)

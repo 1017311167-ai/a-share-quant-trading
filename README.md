@@ -21,6 +21,9 @@
 - 每日对账与崩溃恢复：[docs/RECONCILIATION_RECOVERY.md](docs/RECONCILIATION_RECOVERY.md)
 - QMT 模拟盘持续运行：[docs/PAPER_RUNTIME.md](docs/PAPER_RUNTIME.md)
 - 交易台与研究工作台：[docs/UI_WORKSPACES.md](docs/UI_WORKSPACES.md)
+- 运行监控与运维：[docs/OPERATIONS.md](docs/OPERATIONS.md)
+- Windows 部署：[docs/WINDOWS_DEPLOYMENT.md](docs/WINDOWS_DEPLOYMENT.md)
+- CI 与发布流程：[docs/CI_RELEASE.md](docs/CI_RELEASE.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -105,6 +108,16 @@
 │   ├── replay.py          # 行情回放、断线和撤单事件
 │   ├── verification.py    # 完整链路验收报告
 │   └── test_paper_runtime.py # 全链路、重复订单、风控绕过和恢复测试
+├── ops/                   # 日志、指标、告警、配置、备份和进程守护
+│   ├── logging_setup.py   # JSON 日志、上下文和轮转
+│   ├── metrics.py         # Prometheus 指标和健康检查
+│   ├── alerts.py          # 告警冷却和去重
+│   ├── config.py          # profile/account 配置隔离
+│   ├── backup.py          # SQLite 备份、校验和恢复
+│   ├── supervisor.py      # 自动重启和指数退避
+│   └── service.py         # 隔离配置服务入口
+├── configs/               # 按环境和账户隔离的配置模板
+├── scripts/windows/       # Windows 计划任务、守护和备份脚本
 ├── notification/          # 消息推送
 │   └── notifier.py        # 邮件（HTML/附件）+ 企业微信机器人（text/markdown），.env 配置
 ├── strategies/            # 策略库
@@ -259,6 +272,7 @@ python3 execution/test_execution.py   # 订单执行、幂等和重启恢复测�
 python3 persistence/test_persistence.py # 数据库、每日对账、差异告警和人工恢复测试
 python3 trading/test_paper_runtime.py  # 模拟盘完整链路、回放、断线和风控绕过测试
 python3 app/test_console.py            # 交易台/研究工作台和急停命令队列测试
+python3 ops/test_ops.py                # 日志、指标、告警、配置、备份和守护测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
@@ -300,6 +314,9 @@ python3 strategies/factory.py         # 策略工厂测试（其余模块同理�
 - [x] QMT 模拟盘持续运行宿主、JSONL 信号、链路验收和真实资金硬门禁
 - [x] 模拟盘行情回放、断线重连、重复订单、重复成交和风控绕过测试
 - [x] 交易台与研究双工作区 UI、模拟盘/实盘环境标识、运行状态和急停命令队列
+- [x] 结构化日志、Prometheus 指标、告警冷却、日志轮转和密钥脱敏
+- [x] profile/account 配置隔离、SQLite 备份恢复和 Windows 进程守护
+- [x] GitHub Actions 单元测试、集成测试和 Tag 发布流程
 - [x] 回测完成自动推送（回测页/批量页：勾选自动推送或手动按钮，邮件 + 企业微信）
 - [x] 分钟线行情（1/5/15/30/60 分钟，新浪数据源）+ 日线/分钟线无缝切换回测，
       年化指标按频率自动折算

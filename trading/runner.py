@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -18,6 +19,9 @@ from broker_adapter.mock_broker import MockBroker
 from broker_adapter.qmt_adapter import QmtBroker
 from execution import ExecutionPolicy, OrderExecutionManager, SQLiteExecutionStore
 from notification import Notifier
+from ops.alerts import AlertManager
+from ops.logging_setup import configure_logging, log_event
+from ops.metrics import start_metrics_server
 from persistence import (
     ExecutionPersistenceBridge,
     ReconciliationService,
@@ -63,10 +67,18 @@ def build_parser():
         default="none",
     )
     parser.add_argument("--notify", action="store_true")
+    parser.add_argument("--metrics-host", default="127.0.0.1")
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=int(os.getenv("OPS_METRICS_PORT", "0")),
+    )
+    parser.add_argument("--log-file", default=None)
+    parser.add_argument("--json-logs", action="store_true")
     return parser
 
 
-def build_runtime(args):
+def build_runtime(args, *, alert_manager=None):
     if args.broker == "qmt":
         broker = QmtBroker(
             account_id=args.account,
@@ -162,14 +174,45 @@ def build_runtime(args):
         poll_interval=args.poll_interval,
         reconcile_interval=args.reconcile_interval,
         clock=clock,
+        alert_manager=alert_manager,
     )
     return runtime, repository, execution_store, safety
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    runtime, repository, execution_store, safety = build_runtime(args)
+    configure_logging(
+        log_file=args.log_file,
+        json_logs=True if args.json_logs else None,
+    )
+    logger = configure_logging().getChild("runner")
+    alert_manager = AlertManager(
+        Notifier() if args.notify else None,
+        cooldown_seconds=float(
+            os.getenv("OPS_ALERT_COOLDOWN_SECONDS", "300")
+        ),
+        state_file=os.getenv(
+            "OPS_ALERT_STATE_FILE", "logs/alert_state.json"
+        ),
+    )
+    metrics_server = None
+    if args.metrics_port > 0:
+        metrics_server = start_metrics_server(
+            args.metrics_host, args.metrics_port
+        )
+    runtime, repository, execution_store, safety = build_runtime(
+        args, alert_manager=alert_manager
+    )
     account_id = runtime.account_id
+    log_event(
+        logger,
+        "runner_started",
+        "模拟盘运行入口已启动",
+        account_id=account_id,
+        broker=args.broker,
+        database=str(repository.db.path),
+        metrics_port=args.metrics_port,
+    )
     try:
         if not getattr(runtime.broker, "_connected", False):
             runtime.broker.connect()
@@ -256,11 +299,21 @@ def main(argv=None):
             "数据库": str(repository.db.path),
             "链路验收": verification.to_dict(),
         }, ensure_ascii=False, indent=2))
+        log_event(
+            logger,
+            "runner_stopped",
+            "模拟盘运行入口已停止",
+            account_id=account_id,
+            cycles=cycles,
+            verification_passed=verification.passed,
+        )
         return 0 if verification.passed else 1
     finally:
         runtime.broker.disconnect()
         repository.close()
         execution_store.close()
+        if metrics_server is not None:
+            metrics_server.shutdown()
 
 
 if __name__ == "__main__":
