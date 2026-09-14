@@ -275,6 +275,9 @@ Bootstrap -> Application + Ports + Adapters
 
 ## 6. 核心领域对象
 
+详细字段、聚合关系和幂等约束见 `docs/DOMAIN_MODEL.md`；订单迁移和恢复流程见
+`docs/ORDER_STATE_MACHINE.md`。
+
 | 对象 | 含义 | 主要拥有者 |
 | --- | --- | --- |
 | Instrument | 股票标识、板块和交易规则 | Data / Domain |
@@ -436,4 +439,3 @@ src/quant_trading/
 - 订单、成交、持仓和资金具备明确的一致性和恢复策略。
 - 所有外部依赖都通过端口进入系统。
 - 架构文档与项目章程、三阶段准入标准没有冲突。
-

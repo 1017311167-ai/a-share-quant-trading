@@ -12,6 +12,8 @@
 - 现实成交模型与成本敏感性：[docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md)
 - 多标的组合回测：[docs/PORTFOLIO_BACKTEST.md](docs/PORTFOLIO_BACKTEST.md)
 - 稳健性与过拟合评估：[docs/VALIDATION.md](docs/VALIDATION.md)
+- 交易领域数据模型：[docs/DOMAIN_MODEL.md](docs/DOMAIN_MODEL.md)
+- 订单状态机与恢复规则：[docs/ORDER_STATE_MACHINE.md](docs/ORDER_STATE_MACHINE.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
