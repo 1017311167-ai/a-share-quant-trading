@@ -519,6 +519,32 @@ def submit_with_risk(broker: BaseBroker, engine: RiskEngine,
     return decision, order_id
 
 
+def execute_kill_switch(broker: BaseBroker, engine: RiskEngine,
+                        reason: str) -> int:
+    """启用全局急停并撤销券商全部可撤订单。"""
+    engine.enable_kill_switch(reason)
+    try:
+        cancelled = broker.cancel_order_all()
+    except Exception as exc:
+        engine._emit(
+            "KILL_SWITCH_CANCEL_FAILED",
+            RiskLevel.CRITICAL,
+            "killed",
+            "failed",
+            f"全局急停后撤单失败：{exc}",
+        )
+        raise
+    engine._emit(
+        "KILL_SWITCH_CANCEL_ALL",
+        RiskLevel.CRITICAL,
+        "killed",
+        "completed",
+        f"全局急停已发出 {cancelled} 笔撤单",
+        measured_value=cancelled,
+    )
+    return int(cancelled)
+
+
 def _account_from_dict(data: dict) -> AccountState:
     return AccountState(
         account_id=str(data.get("资金账号", "")),

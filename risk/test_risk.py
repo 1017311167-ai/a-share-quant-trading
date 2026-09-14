@@ -12,6 +12,7 @@ from broker_adapter.mock_broker import MockBroker
 from broker_adapter.models import OrderRequest, OrderSide
 from risk.engine import (
     RiskEngine,
+    execute_kill_switch,
     risk_context_from_broker,
     submit_with_risk,
 )
@@ -288,6 +289,23 @@ def test_mock_broker_risk_integration():
     print("PASS MockBroker risk integration")
 
 
+def test_kill_switch_cancels_broker_orders():
+    broker = MockBroker(fill_mode="none")
+    broker.connect()
+    order_id = broker.order_buy("600519", 10.0, 100)
+    engine = RiskEngine()
+    cancelled = execute_kill_switch(broker, engine, "test emergency")
+    assert cancelled == 1
+    assert engine.state is TradingState.KILLED
+    assert broker.get_order(order_id).status.value == "cancelled"
+    assert any(
+        item.rule_code == "KILL_SWITCH_CANCEL_ALL"
+        for item in engine.events
+    )
+    broker.disconnect()
+    print("PASS kill switch broker cancellation")
+
+
 def run_test():
     for test in (
         test_pretrade_cash_lot_and_position_limits,
@@ -297,6 +315,7 @@ def run_test():
         test_account_loss_and_drawdown_actions,
         test_kill_switch_and_reduce_only,
         test_mock_broker_risk_integration,
+        test_kill_switch_cancels_broker_orders,
     ):
         test()
     print("===== risk engine tests passed =====")

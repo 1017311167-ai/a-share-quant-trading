@@ -2,6 +2,7 @@
 
 from risk.engine import (  # noqa: F401
     RiskEngine,
+    execute_kill_switch,
     risk_context_from_broker,
     submit_with_risk,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "RiskLevel",
     "RiskLimits",
     "TradingState",
+    "execute_kill_switch",
     "risk_context_from_broker",
     "submit_with_risk",
 ]
