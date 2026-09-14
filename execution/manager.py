@@ -267,6 +267,9 @@ class OrderExecutionManager:
     def get_orders_for_intent(self, intent_id: str) -> list[ManagedOrder]:
         return self.store.orders_for_intent(intent_id)
 
+    def list_orders(self) -> list[ManagedOrder]:
+        return self.store.list_orders()
+
     def get_events(self, local_order_id: str) -> list[ExecutionEvent]:
         return self.store.list_events(local_order_id)
 

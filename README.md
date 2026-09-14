@@ -17,6 +17,8 @@
 - 统一券商接口与 MockBroker：[docs/BROKER_INTERFACE.md](docs/BROKER_INTERFACE.md)
 - 实盘交易风控引擎：[docs/RISK_ENGINE.md](docs/RISK_ENGINE.md)
 - 订单执行管理器：[docs/ORDER_EXECUTION.md](docs/ORDER_EXECUTION.md)
+- 统一交易持久化：[docs/PERSISTENCE.md](docs/PERSISTENCE.md)
+- 每日对账与崩溃恢复：[docs/RECONCILIATION_RECOVERY.md](docs/RECONCILIATION_RECOVERY.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -85,6 +87,12 @@
 │   ├── store.py           # SQLite 幂等日志
 │   ├── manager.py         # 撤单、追价、重试和恢复
 │   └── test_execution.py  # 幂等和重启恢复测试
+├── persistence/           # 统一交易数据库、对账和人工恢复
+│   ├── database.py        # SQLite 连接、WAL、事务和表结构
+│   ├── repository.py      # 策略/信号/订单/成交/账户/配置/风控仓储
+│   ├── reconciliation.py  # 每日账户对账、差异归档和告警
+│   ├── recovery.py        # 启动冻结、恢复检查和人工确认
+│   └── test_persistence.py # 持久化/对账/恢复离线测试
 ├── notification/          # 消息推送
 │   └── notifier.py        # 邮件（HTML/附件）+ 企业微信机器人（text/markdown），.env 配置
 ├── strategies/            # 策略库
@@ -198,6 +206,7 @@ python3 research/test_validation.py   # 样本内/外、Walk-forward、蒙特卡
 python3 broker_adapter/test_contract.py # 统一券商接口和 MockBroker 契约测试
 python3 risk/test_risk.py             # 交易前、账户级风控和急停测试
 python3 execution/test_execution.py   # 订单执行、幂等和重启恢复测试
+python3 persistence/test_persistence.py # 数据库、每日对账、差异告警和人工恢复测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
@@ -234,6 +243,8 @@ python3 strategies/factory.py         # 策略工厂测试（其余模块同理�
 - [x] 统一策略元数据、参数 Schema、标准信号和策略版本机制
 - [x] 可复现实验记录（代码版本、数据版本、参数、成本、结果和重放）
 - [x] 订单执行管理器（限价、超时撤单、有限追价、失败重试和重启防重）
+- [x] 统一交易持久化（策略、信号、订单、成交、持仓、资金、配置、风控事件）
+- [x] 每日账户对账、差异告警、崩溃恢复和人工确认恢复流程
 - [x] 回测完成自动推送（回测页/批量页：勾选自动推送或手动按钮，邮件 + 企业微信）
 - [x] 分钟线行情（1/5/15/30/60 分钟，新浪数据源）+ 日线/分钟线无缝切换回测，
       年化指标按频率自动折算

@@ -229,6 +229,18 @@ class SQLiteExecutionStore:
             for row in rows
         ]
 
+    def list_orders(self) -> list[ManagedOrder]:
+        """按创建顺序返回全部执行尝试，供统一仓储镜像。"""
+        with self._lock:
+            rows = self._conn.execute("""
+                SELECT payload_json FROM managed_orders
+                ORDER BY created_at, attempt_no
+            """).fetchall()
+        return [
+            ManagedOrder.from_dict(json.loads(row["payload_json"]))
+            for row in rows
+        ]
+
     def append_event(self, event: ExecutionEvent):
         with self._lock, self._conn:
             self._conn.execute("""

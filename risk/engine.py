@@ -35,12 +35,15 @@ STATE_SEVERITY = {
 class RiskEngine:
     """订单执行前的强制风险闸门和账户风险监控。"""
 
-    def __init__(self, limits: RiskLimits | None = None):
+    def __init__(self, limits: RiskLimits | None = None, *,
+                 event_sink=None):
         self.limits = limits or RiskLimits()
+        self.event_sink = event_sink
         self.state = TradingState.ACTIVE
         self.state_reason = ""
         self.connected = True
         self.connection_error = ""
+        self.last_persistence_error = ""
         self._day = None
         self._start_equity = None
         self._peak_equity = None
@@ -59,6 +62,7 @@ class RiskEngine:
             "state": self.state.value,
             "state_reason": self.state_reason,
             "connected": self.connected,
+            "last_persistence_error": self.last_persistence_error,
             "daily_return": self.daily_return,
             "current_drawdown": self.current_drawdown,
             "orders_today": self.orders_today,
@@ -461,7 +465,7 @@ class RiskEngine:
     def _emit(self, rule_code, level, action, status, message, *,
               symbol=None, measured_value=None, threshold_value=None,
               details=None):
-        self.events.append(RiskEvent(
+        event = RiskEvent(
             event_id=str(uuid.uuid4()),
             rule_code=rule_code,
             level=level,
@@ -472,7 +476,17 @@ class RiskEngine:
             measured_value=measured_value,
             threshold_value=threshold_value,
             details=dict(details or {}),
-        ))
+        )
+        self.events.append(event)
+        if self.event_sink is not None:
+            try:
+                self.event_sink(event)
+                self.last_persistence_error = ""
+            except Exception as exc:
+                # 持久化失败不能绕过内存风控，也不能伪装成券商断线。
+                self.last_persistence_error = (
+                    f"风险事件持久化失败：{type(exc).__name__}: {exc}"
+                )
 
 
 def risk_context_from_broker(
