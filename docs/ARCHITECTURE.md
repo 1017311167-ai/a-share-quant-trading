@@ -132,6 +132,8 @@ Application、Ports 和 Adapters 的位置。
 
 ### 4.6 风控模块 Risk
 
+当前实现和阈值说明见 `docs/RISK_ENGINE.md`。
+
 职责：
 
 - 交易前检查资金、持仓、价格、仓位、频率和账户状态。

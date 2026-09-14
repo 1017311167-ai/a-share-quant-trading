@@ -15,6 +15,7 @@
 - 交易领域数据模型：[docs/DOMAIN_MODEL.md](docs/DOMAIN_MODEL.md)
 - 订单状态机与恢复规则：[docs/ORDER_STATE_MACHINE.md](docs/ORDER_STATE_MACHINE.md)
 - 统一券商接口与 MockBroker：[docs/BROKER_INTERFACE.md](docs/BROKER_INTERFACE.md)
+- 实盘交易风控引擎：[docs/RISK_ENGINE.md](docs/RISK_ENGINE.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -74,6 +75,10 @@
 │   ├── mock_broker.py     # 内存模拟券商
 │   ├── contract.py        # 契约测试工具
 │   └── test_contract.py   # MockBroker 契约测试
+├── risk/                  # 实盘交易风控
+│   ├── models.py          # 风险状态、限额、决策和事件
+│   ├── engine.py          # 交易前/交易中/账户级风控引擎
+│   └── test_risk.py       # 风控和 MockBroker 联动测试
 ├── notification/          # 消息推送
 │   └── notifier.py        # 邮件（HTML/附件）+ 企业微信机器人（text/markdown），.env 配置
 ├── strategies/            # 策略库
@@ -185,6 +190,7 @@ python3 core/test_execution_model.py  # 现实成交与成本敏感性测试（�
 python3 core/test_portfolio_backtest.py # 组合回测目标权重/现金/风险测试（不联网）
 python3 research/test_validation.py   # 样本内/外、Walk-forward、蒙特卡洛和过拟合测试
 python3 broker_adapter/test_contract.py # 统一券商接口和 MockBroker 契约测试
+python3 risk/test_risk.py             # 交易前、账户级风控和急停测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试

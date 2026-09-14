@@ -16,7 +16,6 @@ from broker_adapter.models import (
     OrderSide,
     OrderSnapshot,
     OrderStatus,
-    OrderType,
     TradeSnapshot,
     coerce_datetime,
     normalize_order_status,
