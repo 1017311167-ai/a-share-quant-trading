@@ -30,7 +30,8 @@ from dotenv import load_dotenv
 
 from broker_adapter.base_broker import (BaseBroker, BrokerConfigError,
                                         BrokerConnectionError, BrokerDataError,
-                                        BrokerOrderError)
+                                        BrokerOrderError,
+                                        BrokerOrderUnknownError)
 from broker_adapter.models import (
     BrokerEvent,
     OrderRequest,
@@ -570,10 +571,12 @@ class QmtBroker(BaseBroker):
                     remark or f"{side}{volume}股@{price}",
                 ))
         except Exception as e:
-            raise BrokerOrderError(f"{side}委托 {code} 失败：{e}") from e
+            raise BrokerOrderUnknownError(
+                f"{side}委托 {code} 结果未知：{e}"
+            ) from e
         if order_id is None or int(order_id) < 0:
-            raise BrokerOrderError(
-                f"{side}委托 {code} 失败（SDK 返回 {order_id}）。"
+            raise BrokerOrderUnknownError(
+                f"{side}委托 {code} 结果未知（SDK 返回 {order_id}）。"
                 "异步错误详情会通过 on_order_error 回调返回，请查看日志")
         logger.info("[QMT] %s委托已报：%s %s 股 @ %.2f 元，订单号 %s",
                     side, code, volume, price, order_id)

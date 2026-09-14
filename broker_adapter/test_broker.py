@@ -18,7 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from broker_adapter.base_broker import (BaseBroker, BrokerConfigError,
                                         BrokerConnectionError, BrokerDataError,
-                                        BrokerOrderError)
+                                        BrokerOrderError,
+                                        BrokerOrderUnknownError)
 from broker_adapter.qmt_adapter import (QmtBroker, describe_error_code,
                                         load_broker_config, to_xt_code)
 from broker_adapter.models import OrderStatus
@@ -388,6 +389,7 @@ def test_order_sdk_failure():
             raise AssertionError(f"SDK 返回 {bad} 应抛 BrokerOrderError")
         except BrokerOrderError as e:
             assert "on_order_error" in str(e), e
+            assert isinstance(e, BrokerOrderUnknownError)
     print("✓ 下单失败（SDK 返回 -1/None）：标准异常 + 指向回调日志")
 
 

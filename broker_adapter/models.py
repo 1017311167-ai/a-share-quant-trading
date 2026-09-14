@@ -134,6 +134,14 @@ class TradeSnapshot:
     def to_dict(self) -> dict:
         return _serialize(asdict(self))
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "TradeSnapshot":
+        values = dict(data)
+        values["side"] = OrderSide(values["side"])
+        if values.get("traded_at"):
+            values["traded_at"] = coerce_datetime(values["traded_at"])
+        return cls(**values)
+
 
 @dataclass(frozen=True)
 class OrderDetail:

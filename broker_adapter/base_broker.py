@@ -52,6 +52,10 @@ class BrokerOrderError(BrokerError):
         self.error_code = error_code
 
 
+class BrokerOrderUnknownError(BrokerOrderError):
+    """下单请求已发出，但无法确认券商是否受理。"""
+
+
 class BrokerDataError(BrokerError):
     """查询数据失败：查账户、持仓、实时行情出错"""
 

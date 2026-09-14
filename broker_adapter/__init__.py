@@ -6,7 +6,8 @@
 """
 from broker_adapter.base_broker import (BaseBroker, BrokerConfigError,
                                         BrokerConnectionError, BrokerDataError,
-                                        BrokerError, BrokerOrderError)
+                                        BrokerError, BrokerOrderError,
+                                        BrokerOrderUnknownError)
 from broker_adapter.qmt_adapter import QmtBroker, load_broker_config, to_xt_code
 from broker_adapter.mock_broker import MockBroker
 from broker_adapter.models import (
@@ -25,6 +26,7 @@ __all__ = [
     "BaseBroker", "QmtBroker", "MockBroker",
     "BrokerError", "BrokerConfigError", "BrokerConnectionError",
     "BrokerOrderError", "BrokerDataError",
+    "BrokerOrderUnknownError",
     "BrokerEvent", "OrderDetail", "OrderRequest", "OrderSide",
     "OrderSnapshot", "OrderStatus", "OrderType", "TradeSnapshot",
     "assert_broker_contract", "assert_fill_contract",
