@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-SCHEMA_VERSION = "trading-persistence-v1"
+SCHEMA_VERSION = "trading-persistence-v2"
 
 
 class SQLiteDatabase:
@@ -300,6 +300,31 @@ class SQLiteDatabase:
                 );
                 CREATE INDEX IF NOT EXISTS idx_audit_aggregate
                     ON audit_events(aggregate_type, aggregate_id, created_at);
+
+                CREATE TABLE IF NOT EXISTS runtime_commands (
+                    command_id TEXT PRIMARY KEY,
+                    account_id TEXT NOT NULL,
+                    command_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    requested_at TEXT NOT NULL,
+                    claimed_at TEXT,
+                    claimed_by TEXT,
+                    completed_at TEXT,
+                    payload_json TEXT NOT NULL,
+                    result_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_runtime_commands_account_status
+                    ON runtime_commands(account_id, status, requested_at);
+
+                CREATE TABLE IF NOT EXISTS runtime_heartbeats (
+                    account_id TEXT PRIMARY KEY,
+                    runtime_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    environment TEXT NOT NULL,
+                    last_cycle_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
             """)
             # 兼容持久化草稿早期创建、尚未包含 trade_date 的数据库。
             self._ensure_column(

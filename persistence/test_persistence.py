@@ -64,6 +64,8 @@ def test_schema_and_transaction_rollback():
             "reconciliation_differences",
             "recovery_cases",
             "audit_events",
+            "runtime_commands",
+            "runtime_heartbeats",
         }
         assert required <= tables
         try:

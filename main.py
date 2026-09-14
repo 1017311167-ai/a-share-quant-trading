@@ -2,7 +2,7 @@
 A股量化交易系统 —— 启动入口
 
 用法：
-    python main.py            # 启动研究控制台
+    python main.py            # 启动交易台 + 研究工作台
     python main.py --legacy   # 启动经典回测页面
     python main.py --gui      # 启动 PyQt6 桌面版
 """
@@ -30,7 +30,8 @@ def main():
         os.path.dirname(os.path.abspath(__file__)), "app", app_name
     )
 
-    print("正在启动 A股量化交易系统研究控制台 ...")
+    print("正在启动 A股量化交易与研究平台 ...")
+    print("默认进入交易台，可在左侧切换到研究工作台。")
     print("提示：想用桌面版界面请运行 python main.py --gui")
     print("提示：想用旧版回测页面请运行 python main.py --legacy")
     print("启动成功后浏览器会自动打开界面，按 Ctrl+C 可退出。")

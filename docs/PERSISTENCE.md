@@ -46,6 +46,8 @@ WAL 模式允许订单执行存储与统一仓储使用同一个 SQLite 文件�
 | `reconciliation_differences` | 对账差异及人工结论 | `difference_id` |
 | `recovery_cases` | 崩溃恢复和确认记录 | `recovery_case_id` |
 | `audit_events` | 人工操作和关键流程审计 | `audit_event_id` |
+| `runtime_commands` | UI/运维到交易进程的安全控制命令 | `command_id` |
+| `runtime_heartbeats` | 当前运行实例、状态和最后循环时间 | `account_id` |
 
 ## 4. 事务规则
 
@@ -57,6 +59,7 @@ WAL 模式允许订单执行存储与统一仓储使用同一个 SQLite 文件�
 4. 保存成交并执行幂等检查。
 5. 保存对账批次和差异。
 6. 保存人工确认及其审计事件。
+7. 认领并完成运行命令，禁止 UI 直接修改 RiskEngine 内存状态。
 
 `SQLiteDatabase.transaction()` 使用 `BEGIN IMMEDIATE`，异常时整体回滚。
 所有连接启用 WAL、`synchronous=FULL` 和外键。

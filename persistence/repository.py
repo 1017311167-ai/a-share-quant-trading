@@ -1082,6 +1082,168 @@ class TradingRepository:
             ))
         return self.get_audit_event(audit_event_id)
 
+    def request_runtime_command(
+            self,
+            *,
+            account_id: str,
+            command_type: str,
+            requested_by: str,
+            payload: dict | None = None,
+            command_id: str | None = None,
+            requested_at=None,
+    ) -> dict:
+        allowed = {"stop_open", "reduce_only", "kill_switch", "reconcile"}
+        if command_type not in allowed:
+            raise ValueError(f"不支持的运行命令：{command_type!r}")
+        if not str(requested_by or "").strip():
+            raise ValueError("运行命令必须提供 requested_by")
+        command_id = command_id or str(uuid.uuid4())
+        requested_at = _timestamp(requested_at or self.clock())
+        with self.db.transaction() as conn:
+            conn.execute("""
+                INSERT INTO runtime_commands
+                (command_id, account_id, command_type, status,
+                 requested_by, requested_at, payload_json, result_json)
+                VALUES (?, ?, ?, 'pending', ?, ?, ?, '{}')
+            """, (
+                command_id,
+                account_id,
+                command_type,
+                requested_by,
+                requested_at,
+                _dump(payload or {}),
+            ))
+        return self.get_runtime_command(command_id)
+
+    def get_runtime_command(self, command_id: str) -> dict:
+        row = self.db.query_one("""
+            SELECT * FROM runtime_commands WHERE command_id = ?
+        """, (command_id,))
+        if row is None:
+            raise KeyError(f"未找到运行命令：{command_id}")
+        return _decode_row(row, "payload_json", "result_json")
+
+    def list_runtime_commands(
+            self,
+            account_id=None,
+            *,
+            status: str | None = None,
+            limit: int = 100,
+    ) -> list[dict]:
+        conditions = []
+        params = []
+        if account_id is not None:
+            conditions.append("account_id = ?")
+            params.append(account_id)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(max(1, int(limit)))
+        rows = self.db.query(
+            f"SELECT * FROM runtime_commands {where} "
+            "ORDER BY requested_at DESC LIMIT ?",
+            tuple(params),
+        )
+        return [
+            _decode_row(row, "payload_json", "result_json")
+            for row in rows
+        ]
+
+    def claim_runtime_commands(
+            self,
+            *,
+            account_id: str,
+            worker_id: str,
+            limit: int = 10,
+            claimed_at=None,
+    ) -> list[dict]:
+        claimed_at = _timestamp(claimed_at or self.clock())
+        with self.db.transaction() as conn:
+            rows = conn.execute("""
+                SELECT command_id FROM runtime_commands
+                WHERE account_id = ? AND status = 'pending'
+                ORDER BY requested_at LIMIT ?
+            """, (account_id, max(1, int(limit)))).fetchall()
+            command_ids = [row["command_id"] for row in rows]
+            for command_id in command_ids:
+                conn.execute("""
+                    UPDATE runtime_commands
+                    SET status = 'claimed', claimed_at = ?, claimed_by = ?
+                    WHERE command_id = ? AND status = 'pending'
+                """, (claimed_at, worker_id, command_id))
+        if not command_ids:
+            return []
+        return [
+            self.get_runtime_command(command_id)
+            for command_id in command_ids
+        ]
+
+    def complete_runtime_command(
+            self,
+            command_id: str,
+            *,
+            status: str,
+            result: dict | None = None,
+            completed_at=None,
+    ) -> dict:
+        if status not in {"completed", "failed"}:
+            raise ValueError("运行命令终态只能是 completed/failed")
+        completed_at = _timestamp(completed_at or self.clock())
+        with self.db.transaction() as conn:
+            cursor = conn.execute("""
+                UPDATE runtime_commands
+                SET status = ?, completed_at = ?, result_json = ?
+                WHERE command_id = ? AND status = 'claimed'
+            """, (
+                status,
+                completed_at,
+                _dump(result or {}),
+                command_id,
+            ))
+            if cursor.rowcount == 0:
+                raise ValueError(f"运行命令不可完成：{command_id}")
+        return self.get_runtime_command(command_id)
+
+    def save_runtime_heartbeat(
+            self,
+            *,
+            account_id: str,
+            runtime_id: str,
+            status: str,
+            environment: str,
+            payload: dict | None = None,
+            last_cycle_at=None,
+    ) -> dict:
+        last_cycle_at = _timestamp(last_cycle_at or self.clock())
+        with self.db.transaction() as conn:
+            conn.execute("""
+                INSERT INTO runtime_heartbeats
+                (account_id, runtime_id, status, environment,
+                 last_cycle_at, payload_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(account_id) DO UPDATE SET
+                    runtime_id = excluded.runtime_id,
+                    status = excluded.status,
+                    environment = excluded.environment,
+                    last_cycle_at = excluded.last_cycle_at,
+                    payload_json = excluded.payload_json
+            """, (
+                account_id,
+                runtime_id,
+                status,
+                environment,
+                last_cycle_at,
+                _dump(payload or {}),
+            ))
+        return self.get_runtime_heartbeat(account_id)
+
+    def get_runtime_heartbeat(self, account_id: str) -> dict | None:
+        row = self.db.query_one("""
+            SELECT * FROM runtime_heartbeats WHERE account_id = ?
+        """, (account_id,))
+        return _decode_row(row, "payload_json") if row else None
+
     def get_audit_event(self, audit_event_id: str) -> dict:
         row = self.db.query_one("""
             SELECT * FROM audit_events WHERE audit_event_id = ?
@@ -1343,10 +1505,12 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
-def _decode_row(row, payload_key: str | None = None) -> dict:
+def _decode_row(row, *payload_keys: str) -> dict:
     result = dict(row)
-    if payload_key and payload_key in result:
-        result["payload"] = json.loads(result.pop(payload_key))
+    for payload_key in payload_keys:
+        if payload_key in result:
+            name = payload_key.removesuffix("_json")
+            result[name] = json.loads(result.pop(payload_key))
     if "checks_json" in result:
         result["checks"] = json.loads(result.pop("checks_json"))
     return result

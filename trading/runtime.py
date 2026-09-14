@@ -15,7 +15,7 @@ from broker_adapter.models import normalize_symbol
 from execution.models import ExecutionResult, OrderIntent
 from persistence.reconciliation import ReconciliationService
 from persistence.recovery import RecoveryService
-from risk.engine import risk_context_from_broker
+from risk.engine import execute_kill_switch, risk_context_from_broker
 from risk.models import QuoteState
 from trading.models import SignalAction, TradingSignal
 from trading.safety import assert_paper_trading
@@ -65,6 +65,7 @@ class PaperTradingRuntime:
         self.recovery_case_id = None
         self.last_reconcile_at = None
         self.cycle_count = 0
+        self.runtime_id = str(uuid.uuid4())
         self.last_error = ""
         self._stop_event = threading.Event()
         self.execution_manager.require_risk = True
@@ -84,6 +85,7 @@ class PaperTradingRuntime:
             event_type="runtime_started",
             payload={"reason": reason, "safety": safety, "case": case},
         )
+        self._heartbeat()
         return case
 
     def confirm_recovery(
@@ -100,6 +102,7 @@ class PaperTradingRuntime:
             note=note,
         )
         self.state = case["status"]
+        self._heartbeat()
         return case
 
     def bootstrap_account(
@@ -259,11 +262,14 @@ class PaperTradingRuntime:
     def process_once(self) -> dict:
         self.cycle_count += 1
         assert_paper_trading(self.broker)
+        commands = self._process_runtime_commands()
         if self.state != "confirmed":
+            self._heartbeat()
             return {
                 "cycle": self.cycle_count,
                 "skipped": True,
                 "state": self.state,
+                "commands": commands,
             }
         self.risk_engine.check_runtime(self.risk_context())
         prices = {
@@ -287,6 +293,7 @@ class PaperTradingRuntime:
                     "持续运行对账发现差异，等待人工处理"
                 )
                 self.state = "blocked"
+        self._heartbeat()
         return {
             "cycle": self.cycle_count,
             "orders": [item.to_dict() for item in orders],
@@ -294,6 +301,7 @@ class PaperTradingRuntime:
             "reconciliation": (
                 reconciliation.__dict__ if reconciliation else None
             ),
+            "commands": commands,
         }
 
     def handle_connection_lost(self, message: str = ""):
@@ -310,6 +318,7 @@ class PaperTradingRuntime:
             event_type="connection_lost",
             payload={"message": message},
         )
+        self._heartbeat()
 
     def reconnect_and_reconcile(self, max_attempts: int = 3):
         self.broker.reconnect(max_attempts=max_attempts, delay=0)
@@ -322,6 +331,7 @@ class PaperTradingRuntime:
         )
         self.recovery_case_id = case["recovery_case_id"]
         self.state = case["status"]
+        self._heartbeat()
         return case
 
     def run_forever(
@@ -364,6 +374,87 @@ class PaperTradingRuntime:
         return (
             now - self.last_reconcile_at
         ).total_seconds() >= self.reconcile_interval
+
+    def _process_runtime_commands(self):
+        commands = self.repository.claim_runtime_commands(
+            account_id=self.account_id,
+            worker_id=self.runtime_id,
+            limit=10,
+            claimed_at=self.clock(),
+        )
+        results = []
+        for command in commands:
+            try:
+                result = self._execute_runtime_command(command)
+                completed = self.repository.complete_runtime_command(
+                    command["command_id"],
+                    status="completed",
+                    result=result,
+                    completed_at=self.clock(),
+                )
+            except Exception as exc:
+                completed = self.repository.complete_runtime_command(
+                    command["command_id"],
+                    status="failed",
+                    result={
+                        "error": f"{type(exc).__name__}: {exc}"
+                    },
+                    completed_at=self.clock(),
+                )
+            results.append(completed)
+        return results
+
+    def _execute_runtime_command(self, command):
+        command_type = command["command_type"]
+        payload = command.get("payload") or {}
+        reason = str(
+            payload.get("reason")
+            or f"交易台命令 {command_type}，操作人 {command['requested_by']}"
+        )
+        if command_type == "stop_open":
+            self.risk_engine.enable_stop_open(reason)
+            return {"risk_state": self.risk_engine.state.value, "reason": reason}
+        if command_type == "reduce_only":
+            self.risk_engine.enable_reduce_only(reason)
+            return {"risk_state": self.risk_engine.state.value, "reason": reason}
+        if command_type == "kill_switch":
+            cancelled = execute_kill_switch(
+                self.broker, self.risk_engine, reason
+            )
+            self.execution_bridge.sync_manager(self.execution_manager)
+            self.state = "blocked"
+            return {
+                "risk_state": self.risk_engine.state.value,
+                "cancelled_order_count": cancelled,
+                "reason": reason,
+            }
+        if command_type == "reconcile":
+            result = self.reconciliation_service.reconcile(self.account_id)
+            if result.status != "matched":
+                self.risk_engine.enable_stop_open(
+                    "手工对账发现差异，等待处理"
+                )
+                self.state = "blocked"
+            return {
+                "reconciliation_status": result.status,
+                "difference_count": result.difference_count,
+                "run_id": result.run_id,
+            }
+        raise ValueError(f"不支持的运行命令：{command_type!r}")
+
+    def _heartbeat(self):
+        self.repository.save_runtime_heartbeat(
+            account_id=self.account_id,
+            runtime_id=self.runtime_id,
+            status=self.state,
+            environment="paper",
+            last_cycle_at=self.clock(),
+            payload={
+                "cycle_count": self.cycle_count,
+                "last_error": self.last_error,
+                "risk_state": self.risk_engine.state.value,
+            },
+        )
 
 
 def _quote_from_tick(symbol, tick, now):

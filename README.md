@@ -20,6 +20,7 @@
 - 统一交易持久化：[docs/PERSISTENCE.md](docs/PERSISTENCE.md)
 - 每日对账与崩溃恢复：[docs/RECONCILIATION_RECOVERY.md](docs/RECONCILIATION_RECOVERY.md)
 - QMT 模拟盘持续运行：[docs/PAPER_RUNTIME.md](docs/PAPER_RUNTIME.md)
+- 交易台与研究工作台：[docs/UI_WORKSPACES.md](docs/UI_WORKSPACES.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -48,8 +49,11 @@
 │   ├── e2e_test.py        # 端到端联调测试：下载分钟数据→参数优化→一键回测→批量回测→推送
 │   └── pages/             # 每个标签页一个文件：单股回测/参数寻优/批量回测/数据下载/设置
 ├── app/                   # 界面层（Streamlit 网页界面）
-│   ├── research_console.py # 数据/回测/组合/稳健性/实验综合控制台
+│   ├── research_console.py # 双工作区入口：交易台 + 研究工作台
+│   ├── trading_desk.py    # 账户、持仓、订单、成交、风险与急停
+│   ├── research_overview.py # 回测、样本外、稳定性、配置与数据质量总览
 │   ├── streamlit_app.py   # 交互界面：回测参数设置 + 图表指标 + CSV 导出
+│   ├── test_console.py    # 双工作区和急停命令队列离线测试
 │   └── app.py             # 旧入口（兼容，转发到 streamlit_app.py）
 ├── data/                  # 统一行情数据层
 │   ├── service.py         # 日线/分钟线/实时行情统一服务
@@ -139,6 +143,9 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+默认进入交易台，左侧可切换到研究工作台。运行中的交易进程、当前账户和风险状态均从
+统一 SQLite 数据库读取；急停按钮通过命令队列交给常驻交易进程执行。
 
 经典回测页面：
 
@@ -251,6 +258,7 @@ python3 risk/test_risk.py             # 交易前、账户级风控和急停测�
 python3 execution/test_execution.py   # 订单执行、幂等和重启恢复测试
 python3 persistence/test_persistence.py # 数据库、每日对账、差异告警和人工恢复测试
 python3 trading/test_paper_runtime.py  # 模拟盘完整链路、回放、断线和风控绕过测试
+python3 app/test_console.py            # 交易台/研究工作台和急停命令队列测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
@@ -291,6 +299,7 @@ python3 strategies/factory.py         # 策略工厂测试（其余模块同理�
 - [x] 每日账户对账、差异告警、崩溃恢复和人工确认恢复流程
 - [x] QMT 模拟盘持续运行宿主、JSONL 信号、链路验收和真实资金硬门禁
 - [x] 模拟盘行情回放、断线重连、重复订单、重复成交和风控绕过测试
+- [x] 交易台与研究双工作区 UI、模拟盘/实盘环境标识、运行状态和急停命令队列
 - [x] 回测完成自动推送（回测页/批量页：勾选自动推送或手动按钮，邮件 + 企业微信）
 - [x] 分钟线行情（1/5/15/30/60 分钟，新浪数据源）+ 日线/分钟线无缝切换回测，
       年化指标按频率自动折算

@@ -41,6 +41,12 @@ from research import (
 )
 from strategies.factory import get_available_strategies
 from utils.versioning import get_code_version
+from app.research_overview import render_research_overview
+from app.trading_desk import (
+    discover_database,
+    environment_snapshot,
+    render_trading_desk,
+)
 
 
 PLOT_CONFIG = {"displaylogo": False, "responsive": True}
@@ -56,14 +62,19 @@ FREQ_OPTIONS = {
 
 def main():
     st.set_page_config(
-        page_title="量化研究控制台",
-        page_icon="📈",
+        page_title="A股量化交易与研究平台",
         layout="wide",
         initial_sidebar_state="expanded",
     )
     _apply_style()
-    _sidebar()
-    page = st.session_state.get("console_page", "单股回测")
+    workspace = _workspace_sidebar()
+    if workspace == "交易台":
+        render_trading_desk()
+        return
+    page = st.session_state.get("console_page", "研究总览")
+    if page == "研究总览":
+        render_research_overview()
+        return
     if page == "数据质量":
         page_data_quality()
     elif page == "单股回测":
@@ -78,19 +89,54 @@ def main():
         page_experiments()
 
 
-def _sidebar():
+def _workspace_sidebar():
+    environment = environment_snapshot()
+    database = discover_database()
     with st.sidebar:
-        st.markdown("## 量化研究控制台")
-        st.caption("研究环境 · 未连接实盘")
-        pages = ["数据质量", "单股回测", "组合回测", "成本敏感性", "稳健性验证", "实验台账"]
-        default = st.session_state.get("console_page", "单股回测")
-        page = st.radio(
-            "功能",
-            pages,
-            index=pages.index(default),
-            label_visibility="collapsed",
+        st.markdown("## A股量化系统")
+        color = "#177245" if environment["tone"] == "paper" else (
+            "#b42318" if environment["tone"] == "danger" else "#52514e"
         )
-        st.session_state["console_page"] = page
+        st.markdown(
+            f"<div style='color:{color};font-weight:700;'>"
+            f"{environment['kind']} · "
+            f"{'禁止真实资金' if not environment['allow_real_trading'] else '真实资金开关开启'}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"TRADING_STAGE={environment['stage']} · "
+            f"QMT={environment['qmt_mode']}"
+        )
+        workspace_default = st.session_state.get(
+            "workspace", "交易台"
+        )
+        workspace = st.radio(
+            "工作区",
+            ["交易台", "研究工作台"],
+            index=0 if workspace_default == "交易台" else 1,
+            key="workspace_selector",
+        )
+        st.session_state["workspace"] = workspace
+        if workspace == "研究工作台":
+            st.divider()
+            pages = [
+                "研究总览",
+                "数据质量",
+                "单股回测",
+                "组合回测",
+                "成本敏感性",
+                "稳健性验证",
+                "实验台账",
+            ]
+            default = st.session_state.get("console_page", "研究总览")
+            page = st.radio(
+                "研究功能",
+                pages,
+                index=pages.index(default) if default in pages else 0,
+                label_visibility="collapsed",
+            )
+            st.session_state["console_page"] = page
         st.divider()
         try:
             experiment_count = len(ExperimentStore().list())
@@ -100,8 +146,10 @@ def _sidebar():
             snapshot_count = len(list_snapshots())
         except Exception:
             snapshot_count = 0
+        st.caption(f"交易数据库：{database or '未连接'}")
         st.caption(f"代码版本 {get_code_version()}")
         st.caption(f"实验记录 {experiment_count} · 数据快照 {snapshot_count}")
+        return workspace
 
 
 def page_data_quality():

@@ -284,6 +284,34 @@ def test_replay_disconnect_reconnect_and_manual_reconfirmation():
     print("PASS replay disconnect/reconnect/manual reconfirmation")
 
 
+def test_runtime_commands_and_heartbeat():
+    with tempfile.TemporaryDirectory() as tmp:
+        resources = _build_runtime(tmp, fill_mode="none")
+        runtime, broker, repository, _, risk, _, _ = resources
+        order = runtime.handle_signal(_signal(key="command-order"))
+        command = repository.request_runtime_command(
+            account_id="MOCK-001",
+            command_type="kill_switch",
+            requested_by="ui-test",
+            payload={"reason": "交易台急停测试"},
+        )
+        cycle = runtime.process_once()
+        assert cycle["skipped"]
+        assert cycle["commands"][0]["command_id"] == command["command_id"]
+        assert cycle["commands"][0]["status"] == "completed"
+        assert risk.state is TradingState.KILLED
+        assert runtime.state == "blocked"
+        assert broker.get_order(order.order.broker_order_id).status is (
+            OrderStatus.CANCELLED
+        )
+        heartbeat = repository.get_runtime_heartbeat("MOCK-001")
+        assert heartbeat["status"] == "blocked"
+        assert heartbeat["environment"] == "paper"
+        assert heartbeat["payload"]["risk_state"] == "killed"
+        _close(resources)
+    print("PASS runtime command queue and heartbeat")
+
+
 def test_risk_gate_cannot_be_bypassed():
     with tempfile.TemporaryDirectory() as tmp:
         resources = _build_runtime(tmp, fill_mode="none")
@@ -361,6 +389,7 @@ def run_test():
         test_cancel_order_and_partial_fill_verification,
         test_duplicate_signal_and_duplicate_fill_are_idempotent,
         test_replay_disconnect_reconnect_and_manual_reconfirmation,
+        test_runtime_commands_and_heartbeat,
         test_risk_gate_cannot_be_bypassed,
         test_real_money_modes_are_hard_blocked,
     ):
