@@ -283,6 +283,7 @@ python3 risk/test_risk.py             # 交易前、账户级风控和急停测�
 python3 execution/test_execution.py   # 订单执行、幂等和重启恢复测试
 python3 persistence/test_persistence.py # 数据库、每日对账、差异告警和人工恢复测试
 python3 trading/test_paper_runtime.py  # 模拟盘完整链路、回放、断线和风控绕过测试
+python3 trading/test_session_guard.py  # 交易日、午休、夜间、撤单和恢复时段测试
 python3 app/test_console.py            # 交易台/研究工作台和急停命令队列测试
 python3 ops/test_ops.py                # 日志、指标、告警、配置、备份和守护测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送

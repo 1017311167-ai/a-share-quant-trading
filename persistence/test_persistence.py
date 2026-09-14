@@ -25,6 +25,7 @@ from persistence import (
     TradingRepository,
 )
 from risk import RiskEngine, RiskLimits, TradingState
+from trading.session import TradingSessionGuard
 
 
 NOW = dt.datetime(2026, 9, 14, 15, 10, 0)
@@ -244,7 +245,10 @@ def test_execution_bridge_mirrors_orders_and_fills():
         broker.connect()
         execution_store = SQLiteExecutionStore(path)
         manager = OrderExecutionManager(
-            broker, execution_store, policy=ExecutionPolicy()
+            broker,
+            execution_store,
+            policy=ExecutionPolicy(),
+            session_guard=TradingSessionGuard.always_open(),
         )
         result = manager.submit_intent(OrderIntent(
             idempotency_key="strategy-1:600519:20260914",
@@ -411,7 +415,10 @@ def test_crash_recovery_recovers_order_without_duplicate_submit():
         broker.connect()
         execution_store = SQLiteExecutionStore(path)
         manager = OrderExecutionManager(
-            broker, execution_store, policy=ExecutionPolicy()
+            broker,
+            execution_store,
+            policy=ExecutionPolicy(),
+            session_guard=TradingSessionGuard.always_open(),
         )
         result = manager.submit_intent(OrderIntent(
             idempotency_key="crash-order-1",

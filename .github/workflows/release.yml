@@ -21,6 +21,7 @@ jobs:
         run: |
           python ops/test_ops.py
           python persistence/test_persistence.py
+          python trading/test_session_guard.py
           python trading/test_paper_runtime.py
           python app/test_console.py
       - name: Build release archive

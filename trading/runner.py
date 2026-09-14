@@ -34,6 +34,7 @@ from risk import RiskEngine, RiskLimits
 from trading.feed import JsonlSignalFeed
 from trading.runtime import PaperTradingRuntime
 from trading.safety import assert_paper_trading
+from trading.session import TradingSessionGuard
 from trading.verification import verify_paper_link
 
 
@@ -137,6 +138,10 @@ def build_runtime(args, *, alert_manager=None):
         risk_engine=risk_engine,
         require_risk=True,
         clock=clock,
+        session_guard=TradingSessionGuard(
+            clock=clock,
+            allow_fallback=args.broker == "mock",
+        ),
     )
     bridge = ExecutionPersistenceBridge(
         repository,

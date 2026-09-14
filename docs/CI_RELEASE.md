@@ -29,6 +29,7 @@ python execution/test_execution.py
 python risk/test_risk.py
 python broker_adapter/test_contract.py
 python broker_adapter/test_broker.py
+python trading/test_session_guard.py
 python trading/test_paper_runtime.py
 python app/test_console.py
 ```

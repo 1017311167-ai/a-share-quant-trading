@@ -103,6 +103,16 @@ python3 -m trading.runner \
 7. 按配置周期执行账户对账。
 8. 发现差异时进入 `STOP_OPEN` 并发送告警。
 
+所有会调用券商的路径还必须通过 `TradingSessionGuard`：
+
+- 买入和卖出只允许在交易日 `09:30-11:30`、`13:00-15:00`。
+- 午间休市、收盘后、周末和法定节假日一律拦截。
+- 普通撤单同样受交易时段限制。
+- 重启恢复在非交易时段只保留订单状态，不补单、不追价、不撤单。
+- 全局急停属于紧急风控操作，允许在非交易时段执行全部撤单。
+
+该检查位于 `OrderExecutionManager` 的券商调用之前，不依赖策略或 UI 自觉调用。
+
 断线后交易状态进入 `BLOCKED`。重连不会自动恢复交易，必须重新创建恢复记录并
 由操作人员再次确认。
 
@@ -128,11 +138,13 @@ python3 -m trading.runner \
 - 断线重连后保持停止开仓，必须再次人工确认。
 - 无行情、超时开仓和未配置 RiskEngine 的绕过尝试都会被拒绝。
 - 真实资金模式和非模拟 Broker 会被硬拒绝。
+- 夜间、午休、周末和节假日的买卖、撤单和恢复补单会被统一拦截。
 
 ## 8. 验收命令
 
 ```bash
 python3 trading/test_paper_runtime.py
+python3 trading/test_session_guard.py
 python3 persistence/test_persistence.py
 python3 execution/test_execution.py
 python3 risk/test_risk.py

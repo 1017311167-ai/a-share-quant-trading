@@ -25,6 +25,7 @@ from execution.models import (
 )
 from execution.store import SQLiteExecutionStore
 from risk.models import RiskContext, RiskDecision
+from trading.session import TradingSessionClosed, TradingSessionGuard
 
 
 class OrderExecutionManager:
@@ -41,6 +42,7 @@ class OrderExecutionManager:
             price_provider=None,
             clock=None,
             require_risk: bool = False,
+            session_guard: TradingSessionGuard | None = None,
     ):
         self.broker = broker
         self.store = store
@@ -50,6 +52,7 @@ class OrderExecutionManager:
         self.price_provider = price_provider
         self.clock = clock or dt.datetime.now
         self.require_risk = bool(require_risk)
+        self.session_guard = session_guard or TradingSessionGuard()
 
     def submit_intent(
             self,
@@ -61,6 +64,9 @@ class OrderExecutionManager:
         """幂等提交业务意图。"""
         if self.require_risk and self.risk_engine is None:
             raise RuntimeError("该执行通道强制要求 RiskEngine，禁止绕过风控")
+        self.session_guard.require_order(
+            intent.side, now=self.clock()
+        )
         intent = self.store.save_intent(intent)
         existing = self.store.active_order_for_intent(intent.intent_id)
         if existing is not None:
@@ -148,6 +154,19 @@ class OrderExecutionManager:
         if order.is_terminal:
             self._ingest_trades(order)
             return order
+        try:
+            self.session_guard.require_open(
+                action="recover", now=now
+            )
+        except TradingSessionClosed as exc:
+            order.last_error = str(exc)
+            self.store.save_order(order)
+            self._record_event(
+                order,
+                "PROCESS_BLOCKED_BY_SESSION",
+                details={"reason": str(exc)},
+            )
+            return self.store.get_order(local_order_id)
         broker_order = self._find_broker_order(order)
         if broker_order is not None:
             self._ingest_trades(order)
@@ -237,6 +256,17 @@ class OrderExecutionManager:
         order = self.store.get_order(local_order_id)
         if order.is_terminal:
             return order
+        try:
+            self.session_guard.require_cancel(now=self.clock())
+        except TradingSessionClosed as exc:
+            order.last_error = str(exc)
+            self.store.save_order(order)
+            self._record_event(
+                order,
+                "CANCEL_BLOCKED_BY_SESSION",
+                details={"reason": str(exc)},
+            )
+            return order
         if order.broker_order_id is None:
             return self._transition(
                 order, ExecutionStatus.CANCELLED, "LOCAL_PRE_SUBMIT_CANCEL",
@@ -256,12 +286,28 @@ class OrderExecutionManager:
         """程序启动后恢复非终态订单。"""
         if not getattr(self.broker, "_connected", False):
             self.broker.connect()
+        now = now or self.clock()
+        try:
+            self.session_guard.require_open(
+                action="recover", now=now
+            )
+        except TradingSessionClosed as exc:
+            orders = self.store.list_active_orders()
+            for order in orders:
+                order.last_error = str(exc)
+                self.store.save_order(order)
+                self._record_event(
+                    order,
+                    "RECOVERY_BLOCKED_BY_SESSION",
+                    details={"reason": str(exc)},
+                )
+            return orders
         recovered = []
         for order in self.store.list_active_orders():
             recovered.append(self.process_order(
                 order.local_order_id,
                 market_price=self._market_price(order.symbol),
-                now=now or self.clock(),
+                now=now,
             ))
         return recovered
 
@@ -286,6 +332,19 @@ class OrderExecutionManager:
             ExecutionStatus.PENDING_SUBMIT,
             ExecutionStatus.CREATED,
         }:
+            return
+        try:
+            self.session_guard.require_order(
+                order.side, now=self.clock()
+            )
+        except TradingSessionClosed as exc:
+            order.last_error = str(exc)
+            self.store.save_order(order)
+            self._record_event(
+                order,
+                "SUBMIT_BLOCKED_BY_SESSION",
+                details={"reason": str(exc)},
+            )
             return
         self._transition(
             order, ExecutionStatus.SUBMITTING, "SUBMIT_STARTED"

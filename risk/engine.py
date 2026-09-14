@@ -549,8 +549,10 @@ def submit_with_risk(broker: BaseBroker, engine: RiskEngine,
 
 
 def execute_kill_switch(broker: BaseBroker, engine: RiskEngine,
-                        reason: str) -> int:
+                        reason: str, *, session_guard=None) -> int:
     """启用全局急停并撤销券商全部可撤订单。"""
+    if session_guard is not None:
+        session_guard.require_cancel(emergency=True)
     engine.enable_kill_switch(reason)
     try:
         cancelled = broker.cancel_order_all()

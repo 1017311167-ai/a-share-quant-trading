@@ -21,6 +21,7 @@ from execution.models import (
 from execution.store import SQLiteExecutionStore
 from risk.engine import RiskEngine
 from risk.models import AccountState, QuoteState, RiskContext, RiskLimits
+from trading.session import TradingSessionGuard
 
 
 class TimeoutOnceBroker(MockBroker):
@@ -51,6 +52,7 @@ def _manager(path, broker, policy=None):
         broker,
         SQLiteExecutionStore(path),
         policy=policy or ExecutionPolicy(),
+        session_guard=TradingSessionGuard.always_open(),
     )
 
 
@@ -82,7 +84,11 @@ def test_restart_reconciles_without_resubmit():
         manager.store.close()
 
         recovered_store = SQLiteExecutionStore(path)
-        recovered = OrderExecutionManager(broker, recovered_store)
+        recovered = OrderExecutionManager(
+            broker,
+            recovered_store,
+            session_guard=TradingSessionGuard.always_open(),
+        )
         orders = recovered.recover()
         assert len(orders) == 1
         assert orders[0].broker_order_id == broker_id
@@ -242,6 +248,7 @@ def test_execution_manager_uses_risk_engine():
             SQLiteExecutionStore(f"{tmp}/execution.db"),
             risk_engine=risk,
             risk_context_provider=lambda: context,
+            session_guard=TradingSessionGuard.always_open(),
         )
         result = manager.submit_intent(_intent(quantity=30_000))
         assert result.risk_decision.resized

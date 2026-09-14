@@ -22,6 +22,7 @@ from risk.engine import execute_kill_switch, risk_context_from_broker
 from risk.models import QuoteState
 from trading.models import SignalAction, TradingSignal
 from trading.safety import assert_paper_trading
+from trading.session import TradingSessionClosed
 
 
 class PaperTradingRuntime:
@@ -237,10 +238,32 @@ class PaperTradingRuntime:
                 **dict(signal.metadata),
             },
         )
-        result = self.execution_manager.submit_intent(
-            intent,
-            risk_context=self.risk_context(),
-        )
+        try:
+            result = self.execution_manager.submit_intent(
+                intent,
+                risk_context=self.risk_context(),
+            )
+        except TradingSessionClosed as exc:
+            self.repository.update_signal_status(
+                saved["signal_id"],
+                "rejected",
+                {
+                    "rule_codes": ["TRADING_SESSION_CLOSED"],
+                    "message": str(exc),
+                    "session": exc.decision.session,
+                },
+            )
+            log_event(
+                self.logger,
+                "signal_blocked_by_session",
+                "信号被交易时段拦截",
+                level=logging.WARNING,
+                account_id=self.account_id,
+                symbol=signal.symbol,
+                action=signal.action.value,
+                reason=str(exc),
+            )
+            return ExecutionResult(order=None, message=str(exc))
         if result.risk_decision is not None and not result.risk_decision.approved:
             self.repository.update_signal_status(
                 saved["signal_id"],
@@ -542,7 +565,10 @@ class PaperTradingRuntime:
             return {"risk_state": self.risk_engine.state.value, "reason": reason}
         if command_type == "kill_switch":
             cancelled = execute_kill_switch(
-                self.broker, self.risk_engine, reason
+                self.broker,
+                self.risk_engine,
+                reason,
+                session_guard=self.execution_manager.session_guard,
             )
             self.execution_bridge.sync_manager(self.execution_manager)
             self.state = "blocked"

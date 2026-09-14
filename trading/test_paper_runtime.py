@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from broker_adapter.mock_broker import MockBroker
 from broker_adapter.models import OrderStatus
+from data.trading_calendar import TradingCalendar
 from execution import ExecutionPolicy, OrderExecutionManager, SQLiteExecutionStore
 from persistence import (
     ExecutionPersistenceBridge,
@@ -27,6 +28,7 @@ from trading.feed import ListSignalFeed
 from trading.replay import ReplayRunner
 from trading.runtime import PaperTradingRuntime
 from trading.safety import PaperTradingSafetyError, assert_paper_trading
+from trading.session import TradingSessionGuard
 from trading.verification import verify_paper_link
 
 
@@ -80,6 +82,13 @@ def _build_runtime(tmp, *, fill_mode="none", clock=None):
         account_id=broker.account_id,
         engine=lambda: risk,
     )
+    session_guard = TradingSessionGuard(
+        calendar=TradingCalendar(
+            [clock().date()],
+            source="test-calendar",
+        ),
+        clock=clock,
+    )
     manager = OrderExecutionManager(
         broker,
         execution_store,
@@ -87,6 +96,7 @@ def _build_runtime(tmp, *, fill_mode="none", clock=None):
         risk_engine=risk,
         require_risk=True,
         clock=clock,
+        session_guard=session_guard,
     )
     bridge = ExecutionPersistenceBridge(
         repository,
@@ -320,6 +330,7 @@ def test_risk_gate_cannot_be_bypassed():
             broker,
             SQLiteExecutionStore(f"{tmp}/no-risk.db"),
             require_risk=True,
+            session_guard=TradingSessionGuard.always_open(),
         )
         try:
             from execution.models import OrderIntent
