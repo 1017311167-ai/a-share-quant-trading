@@ -25,6 +25,7 @@ output/
 logs/
 backups/
 runtime/
+.tools/
 tmp/
 experiments/
 *.log
