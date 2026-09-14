@@ -875,13 +875,54 @@ def _apply_style():
     st.markdown(
         """
         <style>
-        .block-container {padding-top: 1.4rem; padding-bottom: 2rem;}
+        [data-testid="stMainBlockContainer"],
+        section.main .block-container {
+            padding-top: 4.5rem !important;
+            padding-bottom: 2.5rem;
+        }
+        [data-testid="stSidebar"] .block-container {
+            padding-top: 2rem;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(8px);
+        }
         [data-testid="stMetric"] {
             border-top: 2px solid #d9d9d4;
             padding-top: .55rem;
+            overflow: visible;
+        }
+        [data-testid="stMetricValue"],
+        [data-testid="stMetricLabel"] {
+            overflow: visible !important;
+            text-overflow: clip !important;
+            white-space: normal !important;
+            line-height: 1.25 !important;
+        }
+        h1, h2, h3 {
+            line-height: 1.3 !important;
+            overflow: visible !important;
         }
         [data-testid="stSidebar"] {
             border-right: 1px solid #e1e0d9;
+        }
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] label {
+            overflow: visible !important;
+            line-height: 1.45 !important;
+        }
+        @media (max-width: 900px) {
+            [data-testid="stMainBlockContainer"],
+            section.main .block-container {
+                padding-top: 5rem !important;
+            }
+            .quant-env-band {
+                flex-direction: column;
+                align-items: flex-start !important;
+            }
+            .quant-env-note {
+                margin-left: 0 !important;
+            }
         }
         </style>
         """,

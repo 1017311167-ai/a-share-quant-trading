@@ -183,7 +183,7 @@ def render_environment_band(environment):
     background, color, border = colors[environment["tone"]]
     st.markdown(
         f"""
-        <div style="display:flex;align-items:center;gap:14px;
+        <div class="quant-env-band" style="display:flex;align-items:center;gap:14px;
                     border:1px solid {border};background:{background};
                     padding:10px 14px;margin-bottom:12px;">
           <span style="font-size:18px;font-weight:700;color:{color};">
@@ -194,7 +194,7 @@ def render_environment_band(environment):
             QMT={html.escape(environment['qmt_mode'])} ·
             真实资金={'允许' if environment['allow_real_trading'] else '禁止'}
           </span>
-          <span style="margin-left:auto;color:{color};">
+          <span class="quant-env-note" style="margin-left:auto;color:{color};">
             {html.escape(environment['note'])}
           </span>
         </div>
@@ -214,14 +214,15 @@ def _render_account_metrics(snapshot, environment):
     unrealized = (
         float(positions["浮动盈亏"].sum()) if not positions.empty else 0.0
     )
-    cols = st.columns(7)
-    cols[0].metric("总资产", _money(total_asset))
-    cols[1].metric("可用资金", _money(available))
-    cols[2].metric("持仓市值", _money(market_value))
-    cols[3].metric("今日盈亏", _money(pnl["amount"]), _pct(pnl["pct"]))
-    cols[4].metric("持仓浮盈", _money(unrealized))
-    cols[5].metric("运行实例", "在线" if online else "离线")
-    cols[6].metric("风险状态", _risk_label(snapshot["risk_state"]))
+    primary = st.columns(4)
+    primary[0].metric("总资产", _money(total_asset))
+    primary[1].metric("可用资金", _money(available))
+    primary[2].metric("持仓市值", _money(market_value))
+    primary[3].metric("今日盈亏", _money(pnl["amount"]), _pct(pnl["pct"]))
+    secondary = st.columns(3)
+    secondary[0].metric("持仓浮盈", _money(unrealized))
+    secondary[1].metric("运行实例", "在线" if online else "离线")
+    secondary[2].metric("风险状态", _risk_label(snapshot["risk_state"]))
     heartbeat = snapshot.get("heartbeat") or {}
     if online:
         st.caption(
