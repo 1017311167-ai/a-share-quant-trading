@@ -31,6 +31,19 @@ from dotenv import load_dotenv
 from broker_adapter.base_broker import (BaseBroker, BrokerConfigError,
                                         BrokerConnectionError, BrokerDataError,
                                         BrokerOrderError)
+from broker_adapter.models import (
+    BrokerEvent,
+    OrderRequest,
+    OrderSide,
+    OrderSnapshot,
+    OrderStatus,
+    OrderType,
+    TradeSnapshot,
+    coerce_datetime,
+    normalize_order_side,
+    normalize_order_status,
+    normalize_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +132,151 @@ def to_xt_code(code: str) -> str:
     return f"{code}.SZ"
 
 
+def _client_order_id_from_remark(remark) -> str | None:
+    text = str(remark or "").strip()
+    if not text:
+        return None
+    if "client_order_id=" in text:
+        value = text.split("client_order_id=", 1)[1].split("|", 1)[0].strip()
+        return value or None
+    return text.split("|", 1)[0].strip() or None
+
+
+def _make_order_remark(client_order_id, remark: str = "") -> str:
+    if client_order_id:
+        return f"client_order_id={client_order_id}|{remark}".strip("|")
+    return remark or ""
+
+
+def _object_to_dict(obj) -> dict:
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return dict(obj)
+    values = {}
+    for name in dir(obj):
+        if name.startswith("_"):
+            continue
+        try:
+            value = getattr(obj, name)
+        except Exception:
+            continue
+        if callable(value):
+            continue
+        if isinstance(value, (str, int, float, bool, type(None))):
+            values[name] = value
+    return values
+
+
+def normalize_order(order, *, sdk_constants=None,
+                    account_id=None) -> OrderSnapshot:
+    """把 xtquant 委托对象转换为统一订单快照。"""
+    side = _side_from_object(order, sdk_constants=sdk_constants)
+    order_id = getattr(order, "order_id", None)
+    quantity = int(getattr(order, "order_volume", 0) or 0)
+    filled = int(getattr(order, "traded_volume", 0) or 0)
+    price = float(getattr(order, "price", 0.0) or 0.0)
+    traded_price = float(getattr(order, "traded_price", 0.0) or 0.0)
+    if traded_price <= 0 and filled > 0:
+        traded_price = price
+    raw_status = getattr(order, "order_status", None)
+    return OrderSnapshot(
+        broker_order_id=str(order_id),
+        symbol=normalize_symbol(getattr(order, "stock_code", "")),
+        side=side,
+        price=price,
+        quantity=quantity,
+        filled_quantity=filled,
+        average_fill_price=traded_price,
+        status=normalize_order_status(raw_status, sdk_constants=sdk_constants),
+        account_id=account_id or getattr(order, "account_id", None),
+        client_order_id=_client_order_id_from_remark(
+            getattr(order, "order_remark", None)
+        ),
+        order_type=OrderType.LIMIT,
+        order_sys_id=str(getattr(order, "order_sysid", "") or "") or None,
+        submitted_at=coerce_datetime(getattr(order, "order_time", None)),
+        updated_at=coerce_datetime(
+            getattr(order, "order_time", None)
+            or getattr(order, "update_time", None)
+        ),
+        status_message=str(getattr(order, "status_msg", "") or ""),
+        strategy_name=str(getattr(order, "strategy_name", "") or ""),
+        order_remark=str(getattr(order, "order_remark", "") or ""),
+        direction=str(getattr(order, "direction", "") or ""),
+        offset_flag=str(getattr(order, "offset_flag", "") or ""),
+        raw_status=raw_status,
+        raw=_object_to_dict(order),
+    )
+
+
+def normalize_trade(trade, *, sdk_constants=None,
+                    account_id=None) -> TradeSnapshot:
+    """把 xtquant 成交对象转换为统一成交快照。"""
+    side = _side_from_object(trade, sdk_constants=sdk_constants)
+    quantity = int(getattr(trade, "traded_volume", 0) or 0)
+    price = float(getattr(trade, "traded_price", 0.0) or 0.0)
+    amount = float(getattr(trade, "traded_amount", quantity * price) or 0.0)
+    commission = float(getattr(trade, "commission", 0.0) or 0.0)
+    stamp_tax = float(getattr(trade, "stamp_tax", 0.0) or 0.0)
+    transfer_fee = float(getattr(trade, "transfer_fee", 0.0) or 0.0)
+    return TradeSnapshot(
+        trade_id=str(getattr(trade, "traded_id", "") or ""),
+        broker_order_id=str(getattr(trade, "order_id", "") or ""),
+        symbol=normalize_symbol(getattr(trade, "stock_code", "")),
+        side=side,
+        quantity=quantity,
+        price=price,
+        amount=amount,
+        traded_at=coerce_datetime(getattr(trade, "traded_time", None)),
+        account_id=account_id or getattr(trade, "account_id", None),
+        client_order_id=_client_order_id_from_remark(
+            getattr(trade, "order_remark", None)
+        ),
+        order_sys_id=str(getattr(trade, "order_sysid", "") or "") or None,
+        commission=commission,
+        stamp_tax=stamp_tax,
+        transfer_fee=transfer_fee,
+        total_fee=commission + stamp_tax + transfer_fee,
+        direction=str(getattr(trade, "direction", "") or ""),
+        offset_flag=str(getattr(trade, "offset_flag", "") or ""),
+        raw=_object_to_dict(trade),
+    )
+
+
+def _matches_order_filters(order, *, symbol=None, status=None,
+                           start_time=None, end_time=None) -> bool:
+    if symbol is not None and order.symbol != normalize_symbol(symbol):
+        return False
+    if status is not None:
+        expected = normalize_order_status(status)
+        if order.status != expected:
+            return False
+    start = coerce_datetime(start_time)
+    end = coerce_datetime(end_time)
+    if start is not None and order.updated_at is not None \
+            and order.updated_at < start:
+        return False
+    if end is not None and order.updated_at is not None \
+            and order.updated_at > end:
+        return False
+    return True
+
+
+def _side_from_object(obj, *, sdk_constants=None) -> OrderSide:
+    values = [
+        getattr(obj, "order_type", None),
+        getattr(obj, "direction", None),
+        getattr(obj, "offset_flag", None),
+    ]
+    for value in values:
+        try:
+            return normalize_order_side(value, sdk_constants=sdk_constants)
+        except ValueError:
+            continue
+    raise ValueError(f"无法识别委托方向：{values!r}")
+
+
 class _TraderCallback:
     """连接 xtquant 回调（XtQuantTraderCallback 子类）。
 
@@ -127,8 +285,12 @@ class _TraderCallback:
     基类在 _connect 时动态绑定真实 XtQuantTraderCallback。
     """
 
-    def __init__(self, on_event=None):
+    def __init__(self, on_event=None, on_disconnect=None, account_id=None,
+                 sdk_constants=None):
         self._on_event = on_event
+        self._on_disconnect = on_disconnect
+        self.account_id = account_id
+        self.sdk_constants = sdk_constants
 
     def _emit(self, name, data):
         if self._on_event:
@@ -141,7 +303,16 @@ class _TraderCallback:
 
     def on_disconnected(self):
         logger.warning("[QMT] 连接已断开，请检查客户端或网络")
-        self._emit("disconnected", {})
+        if self._on_disconnect:
+            self._on_disconnect()
+        self._emit(
+            "disconnected",
+            BrokerEvent(
+                event_type="disconnected",
+                account_id=self.account_id,
+                error_message="QMT 连接已断开",
+            ).to_dict(),
+        )
 
     def on_order_error(self, order_error):
         logger.error("[QMT] 下单失败：%s", _format_order_error(order_error))
@@ -150,6 +321,48 @@ class _TraderCallback:
     def on_cancel_error(self, cancel_error):
         logger.error("[QMT] 撤单失败：%s", _format_cancel_error(cancel_error))
         self._emit("cancel_error", _format_cancel_error(cancel_error))
+
+    def on_stock_order(self, order):
+        snapshot = normalize_order(
+            order,
+            sdk_constants=self.sdk_constants,
+            account_id=self.account_id,
+        )
+        self._emit(
+            "order",
+            BrokerEvent(
+                event_type="order",
+                account_id=self.account_id,
+                order=snapshot,
+            ).to_dict(),
+        )
+
+    def on_stock_trade(self, trade):
+        snapshot = normalize_trade(
+            trade,
+            sdk_constants=self.sdk_constants,
+            account_id=self.account_id,
+        )
+        self._emit(
+            "trade",
+            BrokerEvent(
+                event_type="trade",
+                account_id=self.account_id,
+                trade=snapshot,
+            ).to_dict(),
+        )
+
+    def on_account_status(self, status):
+        self._emit("account_status", _object_to_dict(status))
+
+    def on_stock_asset(self, asset):
+        self._emit("asset", _object_to_dict(asset))
+
+    def on_stock_position(self, position):
+        self._emit("position", _object_to_dict(position))
+
+    def on_order_stock_async_response(self, response):
+        self._emit("order_async_response", _object_to_dict(response))
 
 
 def _format_order_error(e) -> dict:
@@ -255,7 +468,12 @@ class QmtBroker(BaseBroker):
 
         动态创建子类而不是静态继承：SDK 未安装时本模块也能正常导入。
         """
-        inner = _TraderCallback(self.on_event)
+        inner = _TraderCallback(
+            self.on_event,
+            on_disconnect=self._mark_disconnected,
+            account_id=self.account_id,
+            sdk_constants=sdk["xtconstant"],
+        )
         base = sdk["xttrader"].XtQuantTraderCallback
 
         class Callback(base):
@@ -269,14 +487,27 @@ class QmtBroker(BaseBroker):
                 inner.on_cancel_error(cancel_error)
 
             def on_stock_order(self, order):
-                inner._emit("order", {"订单号": getattr(order, "order_id", None),
-                                      "状态": getattr(order, "order_status", None)})
+                inner.on_stock_order(order)
 
             def on_stock_trade(self, trade):
-                inner._emit("trade", {"成交编号": getattr(trade, "traded_id", None),
-                                      "成交价": getattr(trade, "traded_price", None)})
+                inner.on_stock_trade(trade)
+
+            def on_account_status(self, status):
+                inner.on_account_status(status)
+
+            def on_stock_asset(self, asset):
+                inner.on_stock_asset(asset)
+
+            def on_stock_position(self, position):
+                inner.on_stock_position(position)
+
+            def on_order_stock_async_response(self, response):
+                inner.on_order_stock_async_response(response)
 
         return Callback()
+
+    def _mark_disconnected(self):
+        self._connected = False
 
     @staticmethod
     def _unwrap_connect_result(result):
@@ -304,6 +535,7 @@ class QmtBroker(BaseBroker):
             logger.warning("[QMT] 断开连接时出错（可忽略）：%s", e)
         finally:
             self._connected = False
+            self._subscribed_codes.clear()
 
     def _ensure_connected(self):
         if not self._connected:
@@ -311,7 +543,9 @@ class QmtBroker(BaseBroker):
 
     # ---------- 下单 / 撤单 ----------
 
-    def _place_order(self, code, price, volume, order_type, side, require_lot=True):
+    def _place_order(self, code, price, volume, order_type, side,
+                     require_lot=True, client_order_id=None,
+                     strategy_name="abacktest", remark=""):
         self._ensure_connected()
         try:
             price = float(price)
@@ -330,7 +564,11 @@ class QmtBroker(BaseBroker):
             order_id = self._trader.order_stock(
                 self._account, xt_code, order_type, volume,
                 sdk["xtconstant"].FIX_PRICE, price,
-                "abacktest", f"{side}{volume}股@{price}")
+                strategy_name or "abacktest",
+                _make_order_remark(
+                    client_order_id,
+                    remark or f"{side}{volume}股@{price}",
+                ))
         except Exception as e:
             raise BrokerOrderError(f"{side}委托 {code} 失败：{e}") from e
         if order_id is None or int(order_id) < 0:
@@ -353,6 +591,47 @@ class QmtBroker(BaseBroker):
         return self._place_order(code, price, volume,
                                  self._sdk["xtconstant"].STOCK_SELL, "卖出",
                                  require_lot=False)
+
+    def submit_order(self, request: OrderRequest) -> int:
+        """提交统一下单请求。"""
+        self._ensure_connected()
+        order_type = (
+            self._sdk["xtconstant"].STOCK_BUY
+            if request.side is OrderSide.BUY
+            else self._sdk["xtconstant"].STOCK_SELL
+        )
+        return self._place_order(
+            request.symbol,
+            request.price,
+            request.quantity,
+            order_type,
+            "买入" if request.side is OrderSide.BUY else "卖出",
+            require_lot=request.side is OrderSide.BUY,
+            client_order_id=request.client_order_id,
+            strategy_name=request.strategy_name,
+            remark=request.remark,
+        )
+
+    def cancel_order(self, order_id) -> bool:
+        """撤销单笔委托。"""
+        self._ensure_connected()
+        try:
+            result = self._trader.cancel_order_stock(
+                self._account, int(order_id)
+            )
+        except Exception as exc:
+            raise BrokerOrderError(
+                f"撤单失败：订单号 {order_id}，{exc}",
+                order_id=order_id,
+            ) from exc
+        if int(result) != 0:
+            raise BrokerOrderError(
+                f"撤单失败：订单号 {order_id}，返回 {result}"
+                f"（{describe_error_code(result)}）",
+                order_id=order_id,
+                error_code=result,
+            )
+        return True
 
     def cancel_order_all(self):
         """撤销当前账户所有可撤委托，返回实际发出的撤单笔数"""
@@ -379,6 +658,92 @@ class QmtBroker(BaseBroker):
                 logger.warning("[QMT] 撤单失败：订单号 %s，返回 %s（%s）",
                                order.order_id, ret, describe_error_code(ret))
         return ok
+
+    # ---------- 统一订单/成交查询 ----------
+
+    def get_order(self, order_id) -> OrderSnapshot:
+        """查询单笔订单详情。"""
+        self._ensure_connected()
+        sdk = self._sdk
+        try:
+            if hasattr(self._trader, "query_stock_order"):
+                order = self._trader.query_stock_order(
+                    self._account, int(order_id)
+                )
+                if order is not None:
+                    return normalize_order(
+                        order,
+                        sdk_constants=sdk["xtconstant"],
+                        account_id=self.account_id,
+                    )
+        except Exception:
+            pass
+        orders = self.get_orders()
+        for order in orders:
+            if str(order.broker_order_id) == str(order_id):
+                return order
+        raise BrokerDataError(f"未查询到订单：{order_id}")
+
+    def get_orders(self, *, cancelable_only: bool = False,
+                   symbol: str | None = None, status=None,
+                   start_time=None, end_time=None) -> list[OrderSnapshot]:
+        """查询统一订单列表。"""
+        self._ensure_connected()
+        try:
+            orders = self._trader.query_stock_orders(
+                self._account, cancelable_only=cancelable_only
+            ) or []
+        except Exception as exc:
+            raise BrokerDataError(f"查询订单失败：{exc}") from exc
+        normalized = [
+            normalize_order(
+                order,
+                sdk_constants=self._sdk["xtconstant"],
+                account_id=self.account_id,
+            )
+            for order in orders
+        ]
+        return [
+            order for order in normalized
+            if _matches_order_filters(
+                order, symbol=symbol, status=status,
+                start_time=start_time, end_time=end_time,
+            )
+        ]
+
+    def get_trades(self, *, order_id=None, symbol: str | None = None,
+                   start_time=None, end_time=None) -> list[TradeSnapshot]:
+        """查询统一成交列表。"""
+        self._ensure_connected()
+        try:
+            trades = self._trader.query_stock_trades(self._account) or []
+        except Exception as exc:
+            raise BrokerDataError(f"查询成交失败：{exc}") from exc
+        normalized = [
+            normalize_trade(
+                trade,
+                sdk_constants=self._sdk["xtconstant"],
+                account_id=self.account_id,
+            )
+            for trade in trades
+        ]
+        if order_id is not None:
+            normalized = [
+                trade for trade in normalized
+                if str(trade.broker_order_id) == str(order_id)
+            ]
+        if symbol is not None:
+            expected = normalize_symbol(symbol)
+            normalized = [
+                trade for trade in normalized if trade.symbol == expected
+            ]
+        start = coerce_datetime(start_time)
+        end = coerce_datetime(end_time)
+        return [
+            trade for trade in normalized
+            if (start is None or trade.traded_at is None or trade.traded_at >= start)
+            and (end is None or trade.traded_at is None or trade.traded_at <= end)
+        ]
 
     # ---------- 查询 ----------
 

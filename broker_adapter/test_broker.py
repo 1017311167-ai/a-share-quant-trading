@@ -21,6 +21,7 @@ from broker_adapter.base_broker import (BaseBroker, BrokerConfigError,
                                         BrokerOrderError)
 from broker_adapter.qmt_adapter import (QmtBroker, describe_error_code,
                                         load_broker_config, to_xt_code)
+from broker_adapter.models import OrderStatus
 
 
 # ---------- 假 SDK（注入 sys.modules，模拟 Windows 上的 xtquant） ----------
@@ -55,9 +56,42 @@ class FakePosition:
 
 
 class FakeOrder:
-    def __init__(self, order_id, status=50):
+    def __init__(self, order_id, status=50, **kw):
         self.order_id = order_id
         self.order_status = status
+        self.account_id = kw.get("account_id", "88880000")
+        self.stock_code = kw.get("stock_code", "600519.SH")
+        self.instrument_name = kw.get("instrument_name", "贵州茅台")
+        self.order_type = kw.get("order_type", 23)
+        self.order_volume = kw.get("order_volume", 100)
+        self.price_type = kw.get("price_type", 11)
+        self.price = kw.get("price", 1500.0)
+        self.traded_volume = kw.get("traded_volume", 0)
+        self.traded_price = kw.get("traded_price", 0.0)
+        self.order_sysid = kw.get("order_sysid", "")
+        self.order_time = kw.get("order_time", 1700000000)
+        self.status_msg = kw.get("status_msg", "")
+        self.strategy_name = kw.get("strategy_name", "abacktest")
+        self.order_remark = kw.get("order_remark", "")
+        self.direction = kw.get("direction", 23)
+        self.offset_flag = kw.get("offset_flag", 0)
+
+
+class FakeTrade:
+    def __init__(self, trade_id="T001", order_id=100001, **kw):
+        self.traded_id = trade_id
+        self.order_id = order_id
+        self.account_id = kw.get("account_id", "88880000")
+        self.stock_code = kw.get("stock_code", "600519.SH")
+        self.order_type = kw.get("order_type", 23)
+        self.traded_volume = kw.get("traded_volume", 100)
+        self.traded_price = kw.get("traded_price", 1500.0)
+        self.traded_amount = kw.get("traded_amount", 150000.0)
+        self.traded_time = kw.get("traded_time", 1700000001)
+        self.order_sysid = kw.get("order_sysid", "")
+        self.direction = kw.get("direction", 23)
+        self.offset_flag = kw.get("offset_flag", 0)
+        self.order_remark = kw.get("order_remark", "")
 
 
 class FakeTrader:
@@ -87,6 +121,8 @@ class FakeTrader:
         self.cancel_calls = []
         self.cancel_returns = []
         self.cancelable = []        # query_stock_orders 的返回值
+        self.all_orders = []
+        self.trades = []
         self.queried_cancelable_only = None
         self.asset = None
         self.positions = []
@@ -117,6 +153,17 @@ class FakeTrader:
         if self.order_returns:
             return self.order_returns.pop(0)
         self.order_seq += 1
+        self.all_orders.append(FakeOrder(
+            self.order_seq,
+            stock_code=stock_code,
+            order_type=order_type,
+            order_volume=order_volume,
+            price_type=price_type,
+            price=price,
+            strategy_name=strategy_name,
+            order_remark=order_remark,
+            direction=order_type,
+        ))
         return self.order_seq
 
     def cancel_order_stock(self, account, order_id):
@@ -127,7 +174,16 @@ class FakeTrader:
 
     def query_stock_orders(self, account, cancelable_only=False):
         self.queried_cancelable_only = cancelable_only
-        return list(self.cancelable)
+        return list(self.cancelable if cancelable_only else self.all_orders)
+
+    def query_stock_order(self, account, order_id):
+        for order in self.all_orders:
+            if int(order.order_id) == int(order_id):
+                return order
+        return None
+
+    def query_stock_trades(self, account):
+        return list(self.trades)
 
     def query_stock_asset(self, account):
         return self.asset
@@ -162,6 +218,17 @@ def _build_fake_sdk_modules():
     mods["xtconstant"].STOCK_SELL = 24
     mods["xtconstant"].FIX_PRICE = 11
     mods["xtconstant"].LATEST_PRICE = 5
+    mods["xtconstant"].ORDER_UNREPORTED = 48
+    mods["xtconstant"].ORDER_WAIT_REPORTING = 49
+    mods["xtconstant"].ORDER_REPORTED = 50
+    mods["xtconstant"].ORDER_REPORTED_CANCEL = 51
+    mods["xtconstant"].ORDER_PARTSUCC_CANCEL = 52
+    mods["xtconstant"].ORDER_PART_CANCEL = 53
+    mods["xtconstant"].ORDER_CANCELED = 54
+    mods["xtconstant"].ORDER_PART_SUCC = 55
+    mods["xtconstant"].ORDER_SUCCEEDED = 56
+    mods["xtconstant"].ORDER_JUNK = 57
+    mods["xtconstant"].ORDER_UNKNOWN = 255
     mods["xtdata"].subscribe_quote = FakeXtData().subscribe_quote
     sys_modules = {"xtquant": pkg}
     sys_modules.update({f"xtquant.{n}": m for n, m in mods.items()})
@@ -348,6 +415,52 @@ def test_cancel_order_all():
     print("✓ 一键撤单：只查可撤委托，失败不中断其余撤单")
 
 
+def test_single_cancel():
+    b, t = _make_connected_broker()
+    t.all_orders = [FakeOrder(7)]
+    assert b.cancel_order(7) is True
+    assert t.cancel_calls[-1] == 7
+    t.cancel_returns = [-1]
+    try:
+        b.cancel_order(8)
+        raise AssertionError("单笔撤单失败应抛 BrokerOrderError")
+    except BrokerOrderError as e:
+        assert e.order_id == 8
+    print("✓ 单笔撤单：成功返回 True，失败抛标准异常")
+
+
+def test_order_and_trade_queries():
+    b, t = _make_connected_broker()
+    order = FakeOrder(
+        101,
+        status=55,
+        order_remark="client_order_id=test-intent-1|buy",
+        traded_volume=50,
+        traded_price=10.5,
+    )
+    t.all_orders = [order]
+    t.trades = [FakeTrade(
+        trade_id="TRADE-1",
+        order_id=101,
+        traded_volume=50,
+        traded_price=10.5,
+        order_remark="client_order_id=test-intent-1|buy",
+    )]
+    snapshot = b.get_order(101)
+    assert snapshot.broker_order_id == "101"
+    assert snapshot.symbol == "600519"
+    assert snapshot.status is OrderStatus.PARTIALLY_FILLED
+    assert snapshot.client_order_id == "test-intent-1"
+    assert snapshot.remaining_quantity == 50
+    assert b.get_orders(symbol="600519")[0].broker_order_id == "101"
+    trades = b.get_trades(order_id=101)
+    assert len(trades) == 1 and trades[0].trade_id == "TRADE-1"
+    detail = b.get_order_detail(101)
+    assert detail.order.filled_quantity == 50
+    assert detail.trades[0].amount == 150000.0
+    print("✓ 订单/成交查询：统一字段、过滤和订单详情正确")
+
+
 def test_get_account_info():
     b, t = _make_connected_broker()
     t.asset = FakeAsset(total_asset=1_234_567.89, cash=234_567.89)
@@ -395,6 +508,29 @@ def test_subscribe_realtime():
     print("✓ 实时行情订阅：代码转后缀 + tick 回调 + 空列表报错")
 
 
+def test_reconnect_and_callbacks():
+    events = []
+    b, t = _make_connected_broker(
+        on_event=lambda name, data: events.append((name, data))
+    )
+    callback = t.callback
+    callback.on_stock_order(FakeOrder(
+        201, status=50, order_type=23, direction=0
+    ))
+    callback.on_stock_trade(FakeTrade(trade_id="T201", order_id=201))
+    assert events[-2][0] == "order"
+    assert events[-2][1]["order"]["broker_order_id"] == "201"
+    assert events[-2][1]["order"]["side"] == "buy"
+    assert events[-1][0] == "trade"
+    assert events[-1][1]["trade"]["trade_id"] == "T201"
+    callback.on_disconnected()
+    assert b._connected is False
+    b.reconnect(max_attempts=1, delay=0)
+    assert b._connected is True
+    b.disconnect()
+    print("✓ 断线回调与重连：状态复位，订单/成交回调字段完整")
+
+
 def test_sdk_missing_friendly_error():
     # 未注入假 SDK 时：本机若能直接导入真实 xtquant 则跳过，否则验证友好报错
     try:
@@ -415,10 +551,12 @@ def test_sdk_missing_friendly_error():
 
 
 def test_interface_completeness():
-    # 8 个接口都定义在抽象基类里，QmtBroker 全部实现
+    # 核心接口都定义在抽象基类里，QmtBroker 全部实现
     expected = {"connect", "disconnect", "order_buy", "order_sell",
-                "cancel_order_all", "get_positions", "get_account_info",
-                "subscribe_realtime"}
+                "submit_order", "cancel_order", "cancel_order_all",
+                "get_order", "get_orders", "get_trades", "get_order_detail",
+                "get_positions", "get_account_info", "subscribe_realtime",
+                "reconnect"}
     abstract = set()
     for name in expected:
         if getattr(BaseBroker, name, None) is None:
@@ -426,7 +564,7 @@ def test_interface_completeness():
     assert not abstract
     for name in expected:
         assert callable(getattr(QmtBroker, name, None)), f"QmtBroker 缺少接口 {name}"
-    print("✓ 接口契约：BaseBroker 8 个抽象接口，QmtBroker 全部实现")
+    print("✓ 接口契约：订单/成交/撤单/查询/重连接口全部实现")
 
 
 # ---------- B. 真实连接测试（模拟账户，绝不下单） ----------
@@ -472,8 +610,10 @@ def run_test():
                test_connect_flow, test_connect_failure, test_subscribe_failure,
                test_order_buy_sell, test_order_sdk_failure,
                test_error_code_messages, test_cancel_order_all,
+               test_single_cancel, test_order_and_trade_queries,
                test_get_account_info, test_get_positions,
                test_subscribe_realtime, test_sdk_missing_friendly_error,
+               test_reconnect_and_callbacks,
                test_interface_completeness, test_real_sim_account):
         fn()
     print("===== 全部测试通过 =====")

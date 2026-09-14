@@ -14,6 +14,7 @@
 - 稳健性与过拟合评估：[docs/VALIDATION.md](docs/VALIDATION.md)
 - 交易领域数据模型：[docs/DOMAIN_MODEL.md](docs/DOMAIN_MODEL.md)
 - 订单状态机与恢复规则：[docs/ORDER_STATE_MACHINE.md](docs/ORDER_STATE_MACHINE.md)
+- 统一券商接口与 MockBroker：[docs/BROKER_INTERFACE.md](docs/BROKER_INTERFACE.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -66,6 +67,13 @@
 │   ├── __init__.py        # 统一入口：optimize_parameters(method='grid'/'genetic')
 │   ├── grid_search.py     # 网格搜索：穷举所有参数组合，按目标指标排序
 │   └── genetic_algo.py    # 遗传算法：DEAP 进化寻优，每代输出最优解，种子可复现
+├── broker_adapter/        # 统一券商交易接口
+│   ├── base_broker.py     # 统一接口契约
+│   ├── models.py          # 订单、成交、详情和回调模型
+│   ├── qmt_adapter.py     # QMT（xtquant）适配器
+│   ├── mock_broker.py     # 内存模拟券商
+│   ├── contract.py        # 契约测试工具
+│   └── test_contract.py   # MockBroker 契约测试
 ├── notification/          # 消息推送
 │   └── notifier.py        # 邮件（HTML/附件）+ 企业微信机器人（text/markdown），.env 配置
 ├── strategies/            # 策略库
@@ -176,6 +184,7 @@ python3 research/test_research.py     # 策略元数据/信号/实验复现测�
 python3 core/test_execution_model.py  # 现实成交与成本敏感性测试（不联网）
 python3 core/test_portfolio_backtest.py # 组合回测目标权重/现金/风险测试（不联网）
 python3 research/test_validation.py   # 样本内/外、Walk-forward、蒙特卡洛和过拟合测试
+python3 broker_adapter/test_contract.py # 统一券商接口和 MockBroker 契约测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
