@@ -156,6 +156,21 @@ class TradingRepository:
         """, (idempotency_key,))
         return _decode_row(row, "payload_json") if row else None
 
+    def update_signal_status(
+            self, signal_id: str, status: str,
+            payload: dict | None = None) -> dict:
+        existing = self.get_signal(signal_id)
+        merged = dict(existing.get("payload") or {})
+        merged.update(payload or {})
+        with self.db.transaction() as conn:
+            cursor = conn.execute("""
+                UPDATE signals SET status = ?, payload_json = ?
+                WHERE signal_id = ?
+            """, (status, _dump(merged), signal_id))
+            if cursor.rowcount == 0:
+                raise KeyError(f"未找到信号：{signal_id}")
+        return self.get_signal(signal_id)
+
     def save_order_intent(
             self,
             *,
@@ -1094,12 +1109,14 @@ class ExecutionPersistenceBridge:
             *,
             account_id: str,
             signal_id_by_intent: dict | None = None,
+            t_plus_one: bool = True,
     ):
         if not account_id:
             raise ValueError("同步执行状态必须提供 account_id")
         self.repository = repository
         self.account_id = account_id
         self.signal_id_by_intent = dict(signal_id_by_intent or {})
+        self.t_plus_one = bool(t_plus_one)
 
     def sync_order(
             self, order: ManagedOrder, *, intent_payload=None) -> dict:
@@ -1138,8 +1155,13 @@ class ExecutionPersistenceBridge:
 
     def sync_fill(
             self, order: ManagedOrder, trade: TradeSnapshot) -> dict:
+        existing = self.repository.get_fill_by_broker_trade_id(
+            trade.trade_id
+        )
+        if existing is not None:
+            return existing
         payload = trade.to_dict()
-        return self.repository.save_fill(
+        saved = self.repository.save_fill(
             fill_id=f"broker:{trade.trade_id}",
             broker_trade_id=trade.trade_id,
             local_order_id=order.local_order_id,
@@ -1152,6 +1174,8 @@ class ExecutionPersistenceBridge:
             filled_at=trade.traded_at,
             payload=payload,
         )
+        self._apply_trade_to_local_ledger(trade)
+        return saved
 
     def sync_manager(self, manager) -> dict:
         orders = 0
@@ -1168,6 +1192,110 @@ class ExecutionPersistenceBridge:
                 self.sync_fill(order, trade)
                 fills += 1
         return {"orders": orders, "fills": fills}
+
+    def _apply_trade_to_local_ledger(self, trade: TradeSnapshot):
+        cash = self.repository.get_cash_current(self.account_id)
+        if cash is None:
+            raise ValueError(
+                "应用成交到本地账本前必须先建立账户资金快照"
+            )
+        position = self._position_for_trade(trade)
+        old_quantity = int(position.get("total_quantity", 0))
+        old_available = int(position.get("available_quantity", 0))
+        old_cost = float(position.get("average_cost", 0.0))
+        quantity = int(trade.quantity)
+        if trade.side.value == "buy":
+            total_quantity = old_quantity + quantity
+            available_quantity = (
+                old_available if self.t_plus_one
+                else old_available + quantity
+            )
+            book_cost = old_cost * old_quantity + trade.amount \
+                + float(trade.total_fee)
+            average_cost = (
+                book_cost / total_quantity if total_quantity else 0.0
+            )
+        else:
+            total_quantity = max(0, old_quantity - quantity)
+            available_quantity = max(0, old_available - quantity)
+            average_cost = old_cost if total_quantity else 0.0
+        market_price = float(trade.price)
+        market_value = total_quantity * market_price
+        self.repository.save_position_current(
+            account_id=self.account_id,
+            symbol=trade.symbol,
+            total_quantity=total_quantity,
+            available_quantity=available_quantity,
+            frozen_quantity=int(position.get("frozen_quantity", 0)),
+            average_cost=average_cost,
+            market_price=market_price,
+            market_value=market_value,
+            source="LOCAL_FILL",
+            payload={
+                **position,
+                "total_quantity": total_quantity,
+                "available_quantity": available_quantity,
+                "average_cost": average_cost,
+                "market_price": market_price,
+                "market_value": market_value,
+                "source": "LOCAL_FILL",
+            },
+        )
+        cash_delta = (
+            -float(trade.amount) - float(trade.total_fee)
+            if trade.side.value == "buy"
+            else float(trade.amount) - float(trade.total_fee)
+        )
+        available_cash = float(cash["available_cash"]) + cash_delta
+        frozen_cash = float(cash.get("frozen_cash", 0.0))
+        total_market_value = self._local_market_value(trade.symbol)
+        self.repository.save_cash_current(
+            account_id=self.account_id,
+            total_asset=available_cash + frozen_cash + total_market_value,
+            available_cash=available_cash,
+            frozen_cash=frozen_cash,
+            market_value=total_market_value,
+            receivable=float(cash.get("receivable", 0.0)),
+            payable=float(cash.get("payable", 0.0)),
+            source="LOCAL_FILL",
+            payload={
+                **cash,
+                "available_cash": available_cash,
+                "market_value": total_market_value,
+                "source": "LOCAL_FILL",
+            },
+        )
+
+    def _position_for_trade(self, trade):
+        try:
+            return self.repository.get_position_current(
+                self.account_id, trade.symbol
+            )
+        except KeyError:
+            return {
+                "account_id": self.account_id,
+                "symbol": trade.symbol,
+                "total_quantity": 0,
+                "available_quantity": 0,
+                "frozen_quantity": 0,
+                "average_cost": 0.0,
+                "market_price": 0.0,
+                "market_value": 0.0,
+            }
+
+    def _local_market_value(self, current_symbol):
+        total = 0.0
+        for item in self.repository.list_positions_current(self.account_id):
+            total += float(item.get("market_value", 0.0))
+        if total:
+            return total
+        try:
+            current = self.repository.get_position_current(
+                self.account_id, current_symbol
+            )
+        except KeyError:
+            return 0.0
+        return float(current.get("market_value", 0.0))
 
 
 class RiskEventPersistenceSink:

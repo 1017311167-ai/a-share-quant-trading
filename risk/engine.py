@@ -19,6 +19,7 @@ from risk.models import (
     RiskLimits,
     TradingState,
     approved_decision,
+    parse_clock,
     rejected_decision,
 )
 from utils.config import get_price_limit
@@ -269,6 +270,20 @@ class RiskEngine:
                 request,
                 ["ENTRY_BLOCKED"],
                 [self.state_reason or "当前状态禁止开仓"],
+            )
+        cutoff_hour, cutoff_minute = parse_clock(
+            self.limits.latest_entry_time
+        )
+        if (context.now.hour, context.now.minute) >= (
+            cutoff_hour, cutoff_minute
+        ):
+            return self._reject(
+                request,
+                ["ENTRY_TIME_LIMIT"],
+                [
+                    f"当前时间 {context.now:%H:%M} 已超过最晚开仓时间 "
+                    f"{self.limits.latest_entry_time}"
+                ],
             )
         return self._check_buy(request, context, quote)
 

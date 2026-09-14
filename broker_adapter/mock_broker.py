@@ -38,6 +38,7 @@ class MockBroker(BaseBroker):
             commission_min=5.0,
             stamp_tax=True,
             transfer_fee=True,
+            t_plus_one=False,
             on_event=None,
     ):
         if fill_mode not in {"none", "full", "partial", "reject"}:
@@ -51,8 +52,11 @@ class MockBroker(BaseBroker):
         self.commission_min = float(commission_min)
         self.stamp_tax = bool(stamp_tax)
         self.transfer_fee = bool(transfer_fee)
+        self.t_plus_one = bool(t_plus_one)
         self.on_event = on_event
         self._connected = False
+        self.is_simulation = True
+        self.trading_mode = "SIMULATION"
         self._orders: dict[str, dict] = {}
         self._trades: list[TradeSnapshot] = []
         self._positions = {}
@@ -285,7 +289,8 @@ class MockBroker(BaseBroker):
                 position["cost"] * old_qty + gross + sum(fees.values())
             ) / new_qty
             position["quantity"] = new_qty
-            position["available"] += quantity
+            if not self.t_plus_one:
+                position["available"] += quantity
             position["last"] = price
         else:
             position = self._positions.get(order["symbol"])
@@ -336,6 +341,12 @@ class MockBroker(BaseBroker):
             trade=trade,
         ))
         return trade
+
+    def settle_positions(self):
+        """测试用：执行日终 T+1 结算，使全部持仓变为可卖。"""
+        for position in self._positions.values():
+            position["available"] = position["quantity"]
+        self.calls.append(("settle_positions",))
 
     def reject_order(self, order_id, message="mock rejected", error_code=15):
         order = self._get_order_record(order_id)

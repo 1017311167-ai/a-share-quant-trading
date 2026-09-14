@@ -19,6 +19,7 @@
 - 订单执行管理器：[docs/ORDER_EXECUTION.md](docs/ORDER_EXECUTION.md)
 - 统一交易持久化：[docs/PERSISTENCE.md](docs/PERSISTENCE.md)
 - 每日对账与崩溃恢复：[docs/RECONCILIATION_RECOVERY.md](docs/RECONCILIATION_RECOVERY.md)
+- QMT 模拟盘持续运行：[docs/PAPER_RUNTIME.md](docs/PAPER_RUNTIME.md)
 
 > 首版仅支持沪深 A 股现金股票。明确暂不支持期货、期权、融资融券、卖空、
 > 杠杆、北交所股票、ETF 和可转债。
@@ -93,6 +94,13 @@
 │   ├── reconciliation.py  # 每日账户对账、差异归档和告警
 │   ├── recovery.py        # 启动冻结、恢复检查和人工确认
 │   └── test_persistence.py # 持久化/对账/恢复离线测试
+├── trading/               # QMT 模拟盘持续运行、回放和故障注入
+│   ├── runtime.py         # 信号→风控→执行→成交→账本→对账主循环
+│   ├── runner.py          # 模拟盘命令行启动入口
+│   ├── feed.py            # JSONL 增量信号输入
+│   ├── replay.py          # 行情回放、断线和撤单事件
+│   ├── verification.py    # 完整链路验收报告
+│   └── test_paper_runtime.py # 全链路、重复订单、风控绕过和恢复测试
 ├── notification/          # 消息推送
 │   └── notifier.py        # 邮件（HTML/附件）+ 企业微信机器人（text/markdown），.env 配置
 ├── strategies/            # 策略库
@@ -154,6 +162,41 @@ python main.py --gui
 
 > 手动启动网页版也可以：`streamlit run app/app.py`
 
+### 3. QMT 模拟盘持续运行
+
+当前阶段强制使用模拟账户或 MockBroker，真实资金模式会在连接前被拒绝。
+首次运行先建立券商账户基线，再由操作人员确认恢复：
+
+```bash
+python3 -m trading.runner \
+  --broker qmt \
+  --account 模拟资金账号 \
+  --database data/paper_trading.db \
+  --signal-file data/paper_signals.jsonl \
+  --symbols 600519,000001 \
+  --bootstrap \
+  --operator operator@example.com \
+  --notify
+```
+
+本地可先不连接 QMT，直接跑完整模拟链路烟测：
+
+```bash
+python3 -m trading.runner \
+  --broker mock \
+  --mock-fill-mode full \
+  --database data/paper_smoke.db \
+  --signal-file data/paper_signals.jsonl \
+  --bootstrap \
+  --operator local-test \
+  --mock-clock 2026-09-14T10:00:00 \
+  --mock-quote 600519=10.00 \
+  --max-cycles 1
+```
+
+运行逻辑、信号 JSONL 格式、断线恢复和验收边界见
+[docs/PAPER_RUNTIME.md](docs/PAPER_RUNTIME.md)。
+
 ## 打包成 Windows 单文件 exe
 
 桌面版可以打包成一个双击即用的 exe 文件（在 Windows 上执行，macOS 同理）：
@@ -207,6 +250,7 @@ python3 broker_adapter/test_contract.py # 统一券商接口和 MockBroker 契�
 python3 risk/test_risk.py             # 交易前、账户级风控和急停测试
 python3 execution/test_execution.py   # 订单执行、幂等和重启恢复测试
 python3 persistence/test_persistence.py # 数据库、每日对账、差异告警和人工恢复测试
+python3 trading/test_paper_runtime.py  # 模拟盘完整链路、回放、断线和风控绕过测试
 python3 gui/e2e_test.py               # 端到端联调：下载分钟数据→参数优化→一键回测→批量回测→推送
 python3 utils/data_loader.py          # 数据层联网冒烟测试（旧兼容入口）
 python3 core/backtest_engine.py       # 回测引擎测试
@@ -245,6 +289,8 @@ python3 strategies/factory.py         # 策略工厂测试（其余模块同理�
 - [x] 订单执行管理器（限价、超时撤单、有限追价、失败重试和重启防重）
 - [x] 统一交易持久化（策略、信号、订单、成交、持仓、资金、配置、风控事件）
 - [x] 每日账户对账、差异告警、崩溃恢复和人工确认恢复流程
+- [x] QMT 模拟盘持续运行宿主、JSONL 信号、链路验收和真实资金硬门禁
+- [x] 模拟盘行情回放、断线重连、重复订单、重复成交和风控绕过测试
 - [x] 回测完成自动推送（回测页/批量页：勾选自动推送或手动按钮，邮件 + 企业微信）
 - [x] 分钟线行情（1/5/15/30/60 分钟，新浪数据源）+ 日线/分钟线无缝切换回测，
       年化指标按频率自动折算

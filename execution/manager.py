@@ -40,6 +40,7 @@ class OrderExecutionManager:
             risk_context_provider=None,
             price_provider=None,
             clock=None,
+            require_risk: bool = False,
     ):
         self.broker = broker
         self.store = store
@@ -48,6 +49,7 @@ class OrderExecutionManager:
         self.risk_context_provider = risk_context_provider
         self.price_provider = price_provider
         self.clock = clock or dt.datetime.now
+        self.require_risk = bool(require_risk)
 
     def submit_intent(
             self,
@@ -57,6 +59,8 @@ class OrderExecutionManager:
             risk_context: RiskContext | None = None,
     ) -> ExecutionResult:
         """幂等提交业务意图。"""
+        if self.require_risk and self.risk_engine is None:
+            raise RuntimeError("该执行通道强制要求 RiskEngine，禁止绕过风控")
         intent = self.store.save_intent(intent)
         existing = self.store.active_order_for_intent(intent.intent_id)
         if existing is not None:

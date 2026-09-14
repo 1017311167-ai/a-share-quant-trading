@@ -45,6 +45,7 @@ class RiskLimits:
     max_orders_per_day: int = 50
     lot_size: int = 100
     price_limit_tolerance: float = 0.001
+    latest_entry_time: str = "14:50"
 
     def __post_init__(self):
         for name in (
@@ -65,6 +66,7 @@ class RiskLimits:
             raise ValueError("每日最大订单数必须为正整数")
         if self.lot_size < 1:
             raise ValueError("lot_size 必须为正整数")
+        parse_clock(self.latest_entry_time)
 
     @property
     def policy_hash(self) -> str:
@@ -73,6 +75,19 @@ class RiskLimits:
 
         payload = json.dumps(self.__dict__, sort_keys=True)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def parse_clock(value) -> tuple[int, int]:
+    text = str(value or "").strip()
+    try:
+        hour, minute = text.split(":", 1)
+        hour = int(hour)
+        minute = int(minute)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"latest_entry_time 必须是 HH:MM：{value!r}") from exc
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        raise ValueError(f"latest_entry_time 不是合法时间：{value!r}")
+    return hour, minute
 
 
 @dataclass(frozen=True)

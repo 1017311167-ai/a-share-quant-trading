@@ -295,6 +295,27 @@ def test_config_missing():
     print("✓ 缺配置友好报错：提示该在 .env 里填哪一项")
 
 
+def test_real_trading_mode_requires_explicit_unlock():
+    broker = QmtBroker(
+        userdata_path="D:\\qmt\\userdata_mini",
+        account_id="SIM-001",
+        trading_mode="SIMULATION",
+        allow_real_trading=False,
+    )
+    assert broker.is_simulation
+    try:
+        QmtBroker(
+            userdata_path="D:\\qmt\\userdata_mini",
+            account_id="REAL-001",
+            trading_mode="REAL",
+            allow_real_trading=False,
+        )
+        raise AssertionError("未显式解锁时必须拒绝真实账户")
+    except BrokerConfigError:
+        pass
+    print("✓ QMT 环境门禁：模拟声明通过，未解锁的真实模式被拒绝")
+
+
 def test_to_xt_code():
     assert to_xt_code("600519") == "600519.SH"
     assert to_xt_code("000001") == "000001.SZ"
@@ -608,7 +629,9 @@ def test_real_sim_account():
 
 def run_test():
     print("===== broker_adapter 测试 =====")
-    for fn in (test_config_from_env, test_config_missing, test_to_xt_code,
+    for fn in (test_config_from_env, test_config_missing,
+               test_real_trading_mode_requires_explicit_unlock,
+               test_to_xt_code,
                test_connect_flow, test_connect_failure, test_subscribe_failure,
                test_order_buy_sell, test_order_sdk_failure,
                test_error_code_messages, test_cancel_order_all,

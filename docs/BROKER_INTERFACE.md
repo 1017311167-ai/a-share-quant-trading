@@ -245,8 +245,9 @@ python3 broker_adapter/test_broker.py
 
 ## 11. 当前边界
 
+- QMT 适配器默认声明为 `SIMULATION`，未显式解锁时拒绝 REAL；模拟运行宿主
+  会再次检查 `TRADING_STAGE=paper` 和 `QMT_ALLOW_REAL_TRADING=false`。
 - QMT 真实订单备注长度和查询接口仍需在 Windows 模拟账户验证。
 - 部分成交的佣金字段取决于券商回报，缺失时保持 0，不在适配器中推算。
 - MockBroker 只模拟简化账本，不能替代真实交易所撮合。
 - 重连后必须由应用层完成订单、成交、持仓和资金对账。
-

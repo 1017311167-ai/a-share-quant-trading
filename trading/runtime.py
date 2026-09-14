@@ -1,0 +1,425 @@
+"""QMT 模拟账户持续运行宿主。"""
+
+from __future__ import annotations
+
+import datetime as dt
+import threading
+import time
+import uuid
+
+from broker_adapter.base_broker import (
+    BrokerConnectionError,
+    BrokerDataError,
+)
+from broker_adapter.models import normalize_symbol
+from execution.models import ExecutionResult, OrderIntent
+from persistence.reconciliation import ReconciliationService
+from persistence.recovery import RecoveryService
+from risk.engine import risk_context_from_broker
+from risk.models import QuoteState
+from trading.models import SignalAction, TradingSignal
+from trading.safety import assert_paper_trading
+
+
+class PaperTradingRuntime:
+    """把信号、风控、执行、券商回调、持久化和对账串成持续运行循环。"""
+
+    def __init__(
+            self,
+            *,
+            repository,
+            broker,
+            account_id: str,
+            risk_engine,
+            execution_manager,
+            execution_bridge,
+            reconciliation_service: ReconciliationService,
+            recovery_service: RecoveryService,
+            signal_feed=None,
+            poll_interval: float = 1.0,
+            reconcile_interval: float = 300.0,
+            clock=None,
+            sleeper=None,
+    ):
+        if not account_id:
+            raise ValueError("模拟盘运行必须提供 account_id")
+        if risk_engine is None:
+            raise ValueError("模拟盘运行必须提供 RiskEngine")
+        self.repository = repository
+        self.broker = broker
+        self.account_id = account_id
+        self.risk_engine = risk_engine
+        self.execution_manager = execution_manager
+        self.execution_bridge = execution_bridge
+        self.reconciliation_service = reconciliation_service
+        self.recovery_service = recovery_service
+        self.signal_feed = signal_feed
+        self.poll_interval = max(0.05, float(poll_interval))
+        self.reconcile_interval = max(
+            self.poll_interval, float(reconcile_interval)
+        )
+        self.clock = clock or dt.datetime.now
+        self.sleeper = sleeper or time.sleep
+        self.quotes: dict[str, QuoteState] = {}
+        self.state = "created"
+        self.recovery_case_id = None
+        self.last_reconcile_at = None
+        self.cycle_count = 0
+        self.last_error = ""
+        self._stop_event = threading.Event()
+        self.execution_manager.require_risk = True
+        self.execution_manager.risk_engine = self.risk_engine
+        self.execution_manager.risk_context_provider = self.risk_context
+
+    def start_recovery(self, reason: str = "paper_runtime_startup") -> dict:
+        safety = assert_paper_trading(self.broker)
+        case = self.recovery_service.start(self.account_id, reason=reason)
+        self.recovery_case_id = case["recovery_case_id"]
+        self.state = case["status"]
+        self.repository.append_audit_event(
+            audit_event_id=str(uuid.uuid4()),
+            account_id=self.account_id,
+            aggregate_type="paper_runtime",
+            aggregate_id=self.account_id,
+            event_type="runtime_started",
+            payload={"reason": reason, "safety": safety, "case": case},
+        )
+        return case
+
+    def confirm_recovery(
+            self,
+            *,
+            confirmed_by: str,
+            note: str,
+    ) -> dict:
+        if self.recovery_case_id is None:
+            raise ValueError("必须先执行 start_recovery")
+        case = self.recovery_service.confirm(
+            self.recovery_case_id,
+            confirmed_by=confirmed_by,
+            note=note,
+        )
+        self.state = case["status"]
+        return case
+
+    def bootstrap_account(
+            self,
+            *,
+            operator: str,
+            note: str = "QMT 模拟盘首次建立账户基线",
+    ) -> dict:
+        assert_paper_trading(self.broker)
+        if not getattr(self.broker, "_connected", False):
+            self.broker.connect()
+        return self.reconciliation_service.bootstrap_account(
+            self.account_id,
+            resolved_by=operator,
+            note=note,
+        )
+
+    def on_quote(self, symbol: str, quote) -> QuoteState:
+        assert_paper_trading(self.broker)
+        normalized = _quote_from_tick(symbol, quote, self.clock())
+        self.quotes[normalized.symbol] = normalized
+        return normalized
+
+    def risk_context(self):
+        return risk_context_from_broker(
+            self.broker,
+            self.quotes,
+            now=self.clock(),
+        )
+
+    def handle_signal(self, signal: TradingSignal):
+        assert_paper_trading(self.broker)
+        if self.state != "confirmed":
+            raise RuntimeError(
+                f"运行状态为 {self.state}，人工确认恢复前禁止提交信号"
+            )
+        signal_payload = signal.to_dict()
+        saved = self.repository.save_signal(
+            signal_id=signal.signal_id,
+            strategy_instance_id=signal.strategy_instance_id,
+            symbol=signal.symbol,
+            action=signal.action.value,
+            signal_time=signal.signal_time,
+            idempotency_key=signal.idempotency_key,
+            status="accepted",
+            payload=signal_payload,
+        )
+        if saved["status"] == "converted":
+            local_order_id = (
+                saved.get("payload", {}).get("local_order_id")
+            )
+            existing_order = (
+                self.repository.get_order(local_order_id)
+                if local_order_id else None
+            )
+            return ExecutionResult(
+                order=(
+                    self.execution_manager.get_order(local_order_id)
+                    if existing_order else None
+                ),
+                reused_existing=True,
+                message="信号已处理，返回已有订单",
+            )
+        if saved["status"] in {"rejected", "noop"}:
+            return ExecutionResult(
+                order=None,
+                reused_existing=True,
+                message=f"信号已处理，状态为 {saved['status']}",
+            )
+        if signal.action is SignalAction.NOOP:
+            self.repository.update_signal_status(
+                saved["signal_id"], "noop", {"handled": True}
+            )
+            return None
+        intent = OrderIntent(
+            idempotency_key=f"paper-signal:{signal.idempotency_key}",
+            symbol=signal.symbol,
+            side=signal.action.value,
+            quantity=signal.quantity,
+            limit_price=signal.limit_price,
+            hard_limit_price=signal.limit_price,
+            strategy_id=signal.strategy_instance_id,
+            metadata={
+                "strategy_name": signal.strategy_instance_id,
+                "signal_id": signal.signal_id,
+                "signal_idempotency_key": signal.idempotency_key,
+                "data_version": signal.data_version,
+                **dict(signal.metadata),
+            },
+        )
+        result = self.execution_manager.submit_intent(
+            intent,
+            risk_context=self.risk_context(),
+        )
+        if result.risk_decision is not None and not result.risk_decision.approved:
+            self.repository.update_signal_status(
+                saved["signal_id"],
+                "rejected",
+                {
+                    "risk_decision": {
+                        "rule_codes": list(
+                            result.risk_decision.rule_codes
+                        ),
+                        "reasons": list(result.risk_decision.reasons),
+                        "trading_state": (
+                            result.risk_decision.trading_state.value
+                        ),
+                    },
+                    "message": result.message,
+                },
+            )
+            self.execution_bridge.sync_manager(self.execution_manager)
+            return result
+        self.repository.update_signal_status(
+            saved["signal_id"],
+            "converted",
+            {
+                "order_intent_id": intent.intent_id,
+                "local_order_id": (
+                    result.order.local_order_id if result.order else None
+                ),
+                "reused_existing": result.reused_existing,
+            },
+        )
+        self.execution_bridge.sync_manager(self.execution_manager)
+        self.repository.append_audit_event(
+            audit_event_id=str(uuid.uuid4()),
+            account_id=self.account_id,
+            aggregate_type="signal",
+            aggregate_id=signal.signal_id,
+            event_type="signal_executed",
+            payload={
+                "intent_id": intent.intent_id,
+                "local_order_id": (
+                    result.order.local_order_id if result.order else None
+                ),
+                "submitted": result.submitted,
+            },
+        )
+        return result
+
+    def cancel_active_order(self, local_order_id: str | None = None):
+        assert_paper_trading(self.broker)
+        if local_order_id is None:
+            active = self.repository.list_orders(
+                account_id=self.account_id, active_only=True
+            )
+            if not active:
+                return None
+            local_order_id = active[-1]["local_order_id"]
+        order = self.execution_manager.cancel_order(local_order_id)
+        if not order.is_terminal:
+            order = self.execution_manager.process_order(local_order_id)
+        self.execution_bridge.sync_manager(self.execution_manager)
+        return order
+
+    def process_once(self) -> dict:
+        self.cycle_count += 1
+        assert_paper_trading(self.broker)
+        if self.state != "confirmed":
+            return {
+                "cycle": self.cycle_count,
+                "skipped": True,
+                "state": self.state,
+            }
+        self.risk_engine.check_runtime(self.risk_context())
+        prices = {
+            symbol: item.last_price for symbol, item in self.quotes.items()
+        }
+        orders = self.execution_manager.process_all(
+            prices=prices, now=self.clock()
+        )
+        sync = self.execution_bridge.sync_manager(self.execution_manager)
+        reconciliation = None
+        now = self.clock()
+        if (
+            self._reconciliation_due(now)
+        ):
+            reconciliation = self.reconciliation_service.reconcile(
+                self.account_id
+            )
+            self.last_reconcile_at = now
+            if reconciliation.status != "matched":
+                self.risk_engine.enable_stop_open(
+                    "持续运行对账发现差异，等待人工处理"
+                )
+                self.state = "blocked"
+        return {
+            "cycle": self.cycle_count,
+            "orders": [item.to_dict() for item in orders],
+            "sync": sync,
+            "reconciliation": (
+                reconciliation.__dict__ if reconciliation else None
+            ),
+        }
+
+    def handle_connection_lost(self, message: str = ""):
+        self.risk_engine.on_connection_status(
+            False, message or "QMT 模拟账户连接断开"
+        )
+        self.state = "blocked"
+        self.last_error = message
+        self.repository.append_audit_event(
+            audit_event_id=str(uuid.uuid4()),
+            account_id=self.account_id,
+            aggregate_type="broker_connection",
+            aggregate_id=self.account_id,
+            event_type="connection_lost",
+            payload={"message": message},
+        )
+
+    def reconnect_and_reconcile(self, max_attempts: int = 3):
+        self.broker.reconnect(max_attempts=max_attempts, delay=0)
+        self.risk_engine.on_connection_status(
+            True, "QMT 模拟账户连接已恢复"
+        )
+        case = self.recovery_service.start(
+            self.account_id,
+            reason="broker_connection_recovered",
+        )
+        self.recovery_case_id = case["recovery_case_id"]
+        self.state = case["status"]
+        return case
+
+    def run_forever(
+            self,
+            *,
+            stop_event=None,
+            max_cycles: int | None = None,
+    ) -> int:
+        if self.state != "confirmed":
+            raise RuntimeError("人工确认恢复前禁止启动持续运行循环")
+        stop_event = stop_event or self._stop_event
+        cycles = 0
+        while not stop_event.is_set():
+            try:
+                if self.signal_feed is not None:
+                    for signal in self.signal_feed.poll():
+                        self.handle_signal(signal)
+                self.process_once()
+            except (BrokerConnectionError, BrokerDataError, OSError) as exc:
+                self.handle_connection_lost(str(exc))
+                try:
+                    self.reconnect_and_reconcile()
+                except Exception as reconnect_error:
+                    self.last_error = (
+                        f"{type(reconnect_error).__name__}: {reconnect_error}"
+                    )
+            cycles += 1
+            if max_cycles is not None and cycles >= max_cycles:
+                break
+            if not stop_event.is_set():
+                self.sleeper(self.poll_interval)
+        return cycles
+
+    def stop(self):
+        self._stop_event.set()
+
+    def _reconciliation_due(self, now):
+        if self.last_reconcile_at is None:
+            return True
+        return (
+            now - self.last_reconcile_at
+        ).total_seconds() >= self.reconcile_interval
+
+
+def _quote_from_tick(symbol, tick, now):
+    if isinstance(tick, QuoteState):
+        return tick
+    values = tick if isinstance(tick, dict) else {}
+    last_price = _first_number(
+        values,
+        "lastPrice", "last_price", "last", "price",
+    )
+    if last_price is None or last_price <= 0:
+        raise ValueError(f"行情 {symbol} 缺少有效最新价")
+    previous_close = _first_number(
+        values,
+        "lastClose", "preClose", "previous_close", "prev_close",
+    )
+    limit_up = _first_number(values, "limitUp", "limit_up", "upperLimit")
+    limit_down = _first_number(
+        values, "limitDown", "limit_down", "lowerLimit"
+    )
+    timestamp = _quote_time(values, now)
+    tradable = not bool(
+        values.get("suspended")
+        or values.get("isSuspended")
+        or values.get("tradable") is False
+    )
+    return QuoteState(
+        symbol=normalize_symbol(symbol),
+        last_price=float(last_price),
+        previous_close=previous_close,
+        limit_up=limit_up,
+        limit_down=limit_down,
+        timestamp=timestamp,
+        tradable=tradable,
+    )
+
+
+def _first_number(values, *keys):
+    for key in keys:
+        value = values.get(key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _quote_time(values, fallback):
+    value = values.get("timestamp") or values.get("time")
+    if value is None:
+        return fallback
+    if isinstance(value, dt.datetime):
+        return value
+    try:
+        return dt.datetime.fromtimestamp(float(value))
+    except (TypeError, ValueError, OSError):
+        return fallback

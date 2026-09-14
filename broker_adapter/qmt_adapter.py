@@ -15,6 +15,9 @@
     QMT_ACCOUNT          资金账号（模拟账户填模拟账号）
     QMT_ACCOUNT_TYPE     账号类型，默认 STOCK（股票）
     QMT_SESSION_ID       会话 ID（可选，不填自动生成，同账号多程序时需区分）
+    QMT_TRADING_MODE     SIMULATION（默认）或 REAL；当前模拟验收只能使用 SIMULATION
+    QMT_ALLOW_REAL_TRADING
+                         是否显式允许 REAL，默认 false；模拟阶段路由会强制拒绝
 
 说明:
     - xtquant 只在用到时才导入，未安装也不影响主程序运行（连接时报友好错误）；
@@ -68,6 +71,13 @@ def _env_int(key, default=None):
         return default
 
 
+def _env_bool(key, default=False):
+    value = os.getenv(key)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_broker_config() -> dict:
     """从 .env 读取 QMT 配置，返回 dict（缺什么值就是空串，由调用方校验）"""
     _load_env()
@@ -76,6 +86,13 @@ def load_broker_config() -> dict:
         "account_id": os.getenv("QMT_ACCOUNT", "").strip(),
         "account_type": os.getenv("QMT_ACCOUNT_TYPE", "STOCK").strip() or "STOCK",
         "session_id": _env_int("QMT_SESSION_ID", None),
+        "trading_mode": (
+            os.getenv("QMT_TRADING_MODE", "SIMULATION").strip().upper()
+            or "SIMULATION"
+        ),
+        "allow_real_trading": _env_bool(
+            "QMT_ALLOW_REAL_TRADING", False
+        ),
     }
 
 
@@ -391,14 +408,33 @@ class QmtBroker(BaseBroker):
     """
 
     def __init__(self, userdata_path=None, account_id=None, session_id=None,
-                 account_type=None, on_event=None):
+                 account_type=None, on_event=None, trading_mode=None,
+                 allow_real_trading=None):
         cfg = load_broker_config()
         self.userdata_path = userdata_path or cfg["userdata_path"]
         self.account_id = account_id or cfg["account_id"]
         self.session_id = session_id if session_id is not None \
             else (cfg["session_id"] or int(time.time() * 1000) % 10_000_000)
         self.account_type = account_type or cfg["account_type"]
+        self.trading_mode = str(
+            trading_mode or cfg["trading_mode"]
+        ).strip().upper()
+        self.allow_real_trading = (
+            cfg["allow_real_trading"]
+            if allow_real_trading is None else bool(allow_real_trading)
+        )
         self.on_event = on_event
+        if self.trading_mode not in {"SIMULATION", "PAPER", "REAL"}:
+            raise BrokerConfigError(
+                f"QMT_TRADING_MODE 配置非法：{self.trading_mode!r}，"
+                "只能填写 SIMULATION 或 REAL"
+            )
+        if self.trading_mode == "REAL" and not self.allow_real_trading:
+            raise BrokerConfigError(
+                "拒绝连接真实资金账户：QMT_TRADING_MODE=REAL 时必须同时"
+                "显式设置 QMT_ALLOW_REAL_TRADING=true，且必须经过阶段审批"
+            )
+        self.is_simulation = self.trading_mode in {"SIMULATION", "PAPER"}
         if not self.userdata_path:
             raise BrokerConfigError(
                 "未配置 QMT 客户端路径：请在 .env 里填写 QMT_USERDATA_PATH"

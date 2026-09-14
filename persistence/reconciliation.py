@@ -255,6 +255,75 @@ class ReconciliationService:
         )
         return resolved
 
+    def bootstrap_account(
+            self,
+            account_id: str,
+            *,
+            resolved_by: str,
+            note: str,
+    ) -> dict:
+        """模拟阶段首次运行前，以券商账户建立本地账本基线。"""
+        if not str(resolved_by or "").strip():
+            raise ValueError("建立账户基线必须提供 resolved_by")
+        if not str(note or "").strip():
+            raise ValueError("建立账户基线必须提供处理说明")
+        now = self.clock()
+        account_info = self.broker.get_account_info()
+        broker_positions = _broker_positions(self.broker.get_positions())
+        self._persist_broker_positions(
+            account_id, broker_positions, [], now, None
+        )
+        self._persist_broker_cash(
+            account_id, account_info, now, None
+        )
+        for item in self.repository.list_positions_current(account_id):
+            self.repository.save_position_current(
+                account_id=account_id,
+                symbol=item["symbol"],
+                total_quantity=item["total_quantity"],
+                available_quantity=item["available_quantity"],
+                frozen_quantity=item["frozen_quantity"],
+                average_cost=item.get("average_cost", 0.0),
+                market_price=item.get("market_price", 0.0),
+                market_value=item.get("market_value", 0.0),
+                source="BOOTSTRAP",
+                payload={**item, "source": "BOOTSTRAP"},
+                updated_at=now,
+            )
+        cash = self.repository.get_cash_current(account_id)
+        if cash is not None:
+            self.repository.save_cash_current(
+                account_id=account_id,
+                total_asset=cash["total_asset"],
+                available_cash=cash["available_cash"],
+                frozen_cash=cash["frozen_cash"],
+                market_value=cash["market_value"],
+                receivable=cash.get("receivable", 0.0),
+                payable=cash.get("payable", 0.0),
+                source="BOOTSTRAP",
+                payload={**cash, "source": "BOOTSTRAP"},
+                updated_at=now,
+            )
+        self.repository.append_audit_event(
+            audit_event_id=str(uuid.uuid4()),
+            account_id=account_id,
+            aggregate_type="account",
+            aggregate_id=account_id,
+            event_type="paper_account_bootstrapped",
+            payload={
+                "resolved_by": resolved_by,
+                "note": note,
+                "position_count": len(broker_positions),
+            },
+            created_at=now,
+        )
+        return {
+            "account_id": account_id,
+            "position_count": len(broker_positions),
+            "cash": account_info,
+            "bootstrapped_at": now.isoformat(),
+        }
+
     def _compare_positions(
             self, run_id, account_id, local_positions, broker_positions, now):
         local_map = {item["symbol"]: item for item in local_positions}

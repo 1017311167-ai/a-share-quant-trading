@@ -256,6 +256,16 @@ def test_execution_bridge_mirrors_orders_and_fills():
         manager.process_order(result.order.local_order_id)
 
         repo = TradingRepository(SQLiteDatabase(path))
+        account = broker.get_account_info()
+        repo.save_cash_current(
+            account_id=broker.account_id,
+            total_asset=account["总资产"],
+            available_cash=account["可用资金"],
+            frozen_cash=account["冻结资金"],
+            market_value=account["持仓市值"],
+            source="BOOTSTRAP",
+            payload=account,
+        )
         bridge = ExecutionPersistenceBridge(
             repo, account_id=broker.account_id
         )

@@ -230,6 +230,7 @@ def test_execution_manager_uses_risk_engine():
                 available_cash=1_000_000,
             ),
             quotes={"600519": quote},
+            now=dt.datetime(2026, 9, 14, 10, 0, 0),
         )
         risk = RiskEngine(RiskLimits(
             max_single_position_pct=0.2,
