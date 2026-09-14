@@ -23,6 +23,7 @@ from ops.metrics import start_metrics_server
 from ops.redaction import redact, redact_text
 from ops.supervisor import ProcessSupervisor
 from scripts.package_release import build_release
+from scripts.macos.build_app import build_app
 
 
 class FakeNotifier:
@@ -276,6 +277,21 @@ def test_release_package_excludes_secrets_and_runtime_data():
     print("PASS release package excludes secrets and runtime data")
 
 
+def test_macos_app_bundle_builds():
+    with tempfile.TemporaryDirectory() as tmp:
+        result = build_app(tmp, name="测试软件")
+        app = Path(result["app"])
+        executable = app / "Contents/MacOS/QuantTradingDesk"
+        plist = app / "Contents/Info.plist"
+        command = Path(result["command"])
+        assert executable.exists()
+        assert plist.exists()
+        assert command.exists()
+        assert "launcher.py" in executable.read_text(encoding="utf-8")
+        assert os.access(executable, os.X_OK)
+    print("PASS macOS app bundle builds")
+
+
 def run_test():
     for test in (
         test_redaction_and_structured_logging,
@@ -287,6 +303,7 @@ def run_test():
         test_sqlite_backup_verify_and_restore,
         test_supervisor_restarts_failed_child,
         test_release_package_excludes_secrets_and_runtime_data,
+        test_macos_app_bundle_builds,
     ):
         test()
     print("===== ops tests passed =====")

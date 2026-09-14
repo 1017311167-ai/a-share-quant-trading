@@ -217,6 +217,18 @@ python3 -m trading.runner \
 运行逻辑、信号 JSONL 格式、断线恢复和验收边界见
 [docs/PAPER_RUNTIME.md](docs/PAPER_RUNTIME.md)。
 
+### 4. macOS 双击应用
+
+生成可直接打开的应用包：
+
+```bash
+python3 scripts/macos/build_app.py --output-dir dist
+open dist/量化交易台.app
+```
+
+应用默认使用 `DEMO-PAPER-001` 演示模拟账户和独立数据库，不会连接 QMT 或真实资金。
+详细说明见 [docs/DESKTOP_APP.md](docs/DESKTOP_APP.md)。
+
 ## 打包成 Windows 单文件 exe
 
 桌面版可以打包成一个双击即用的 exe 文件（在 Windows 上执行，macOS 同理）：
